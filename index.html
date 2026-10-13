@@ -134,6 +134,7 @@
     <main class="content" id="content">
       <div id="tasksPanel">
       <div class="stats" id="stats" aria-label="Summary"></div>
+      <div class="focus-banner" id="focusBanner" hidden></div>
 
       <div class="toolbar">
         <h2 class="view-title" id="viewTitle">All tasks</h2>
@@ -290,11 +291,17 @@
         </div>
       </fieldset>
 
-      <label class="field">
-        <span>Work on a task <em class="optional">optional</em></span>
-        <select id="blockTask"></select>
-        <small class="hint">Linking a task does not complete it — it is just what you plan to work on.</small>
-      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Category <em class="optional">optional</em></span>
+          <select id="blockCategory"></select>
+        </label>
+        <label class="field">
+          <span>Work on a task <em class="optional">optional</em></span>
+          <select id="blockTask"></select>
+        </label>
+      </div>
+      <p class="hint field-hint">Switching to Tasks while a block with a category is running shows only that category. Linking a task does not complete it — it is just what you plan to work on.</p>
 
       <fieldset class="field">
         <legend>Color</legend>

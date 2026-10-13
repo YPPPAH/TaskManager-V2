@@ -55,6 +55,7 @@
     mode: 'tasks',            // 'tasks' | 'schedule'
     remindMinutes: 10,        // schedule reminders fire this many minutes before a block starts / ends
     reminderSound: true,      // also play a short sound with each reminder
+    focus: null,              // Tasks narrowed to one category by the running block: { categoryId, blockId, snapshot }
   };
 
   const ICON_PATHS = {
@@ -219,7 +220,7 @@
     const blockIds = new Set();
     if (Array.isArray(raw.blocks)) {
       for (const b of raw.blocks) {
-        const block = normalizeBlock(b, out.blocks.length, taskIds);
+        const block = normalizeBlock(b, out.blocks.length, taskIds, catIds);
         if (block && !blockIds.has(block.id)) { blockIds.add(block.id); out.blocks.push(block); }
       }
     }
@@ -264,7 +265,7 @@
     };
   }
 
-  function normalizeBlock(b, index, taskIds) {
+  function normalizeBlock(b, index, taskIds, catIds) {
     if (!b || typeof b !== 'object') return null;
     const title = String(b.title == null ? '' : b.title).trim().slice(0, 80);
     if (!title || !isHm(b.start) || !isHm(b.end) || hmToMin(b.end) <= hmToMin(b.start)) return null;
@@ -283,6 +284,7 @@
       date,              // 'YYYY-MM-DD' for a one-off block, otherwise null
       color: isHexColor(b.color) ? b.color.toLowerCase() : CATEGORY_COLORS[(index || 0) % CATEGORY_COLORS.length],
       taskId: typeof b.taskId === 'string' && taskIds.has(b.taskId) ? b.taskId : null,
+      categoryId: typeof b.categoryId === 'string' && catIds.has(b.categoryId) ? b.categoryId : null,
       notes: String(b.notes == null ? '' : b.notes).slice(0, 500),
       notify: b.notify !== false,
       createdAt: created,
@@ -308,6 +310,16 @@
     if (MODES.includes(s.mode)) out.mode = s.mode;
     if (REMIND_OPTIONS.includes(s.remindMinutes)) out.remindMinutes = s.remindMinutes;
     if (typeof s.reminderSound === 'boolean') out.reminderSound = s.reminderSound;
+    if (s.focus && typeof s.focus === 'object' && typeof s.focus.categoryId === 'string') {
+      const snap = s.focus.snapshot && typeof s.focus.snapshot === 'object' ? s.focus.snapshot : {};
+      const enabled = {};
+      if (snap.enabled && typeof snap.enabled === 'object') Object.keys(snap.enabled).forEach(k => { enabled[k] = snap.enabled[k] !== false; });
+      out.focus = {
+        categoryId: s.focus.categoryId,
+        blockId: typeof s.focus.blockId === 'string' ? s.focus.blockId : null,
+        snapshot: { enabled, showUncategorized: snap.showUncategorized !== false },
+      };
+    }
     return out;
   }
 
@@ -579,6 +591,7 @@
     el.priorityFilter.value = s.priorityFilter;
     el.showCompleted.checked = s.showCompleted;
     el.showCompletedWrap.hidden = s.view === 'completed' || s.view === 'overdue';
+    renderFocusBanner();
   }
 
   function renderList() {
@@ -673,12 +686,16 @@
     updateSettings({ view: key, mode: 'tasks' });
   }
 
-  function setMode(mode) {
+  /** opts.focus: when moving Schedule → Tasks, narrow Tasks to the running block's category (see focusForCurrentBlock). */
+  function setMode(mode, opts) {
     if (!MODES.includes(mode) || mode === data.settings.mode) return;
+    if (mode === 'tasks' && opts && opts.focus) focusForCurrentBlock();
     updateSettings({ mode });
   }
 
+  // Changing the category switches by hand always ends a block focus, so it never fights the user's choices.
   function setCategoryEnabled(id, enabled) {
+    data.settings.focus = null;
     if (id === '__none__') { updateSettings({ showUncategorized: enabled }); return; }
     const c = getCategory(id);
     if (!c) return;
@@ -687,8 +704,56 @@
   }
 
   function setAllCategories(enabled) {
+    data.settings.focus = null;
     data.categories.forEach(c => { c.enabled = enabled; });
     updateSettings({ showUncategorized: enabled });
+  }
+
+  // ---------- Schedule → Tasks category focus ----------
+  // Switching to Tasks while a block with a category is running shows only that category. The toggles
+  // from before are kept in settings.focus.snapshot so "Show everything again" restores them exactly.
+
+  function currentToggleSnapshot() {
+    const enabled = {};
+    data.categories.forEach(c => { enabled[c.id] = c.enabled; });
+    return { enabled, showUncategorized: data.settings.showUncategorized };
+  }
+
+  function focusForCurrentBlock() {
+    const b = currentBlockInfo(nowMinutes()).current;
+    const cat = b && b.categoryId ? getCategory(b.categoryId) : null;
+    const focus = data.settings.focus;
+    if (!cat) { if (focus) restoreFocusSnapshot(); return; }
+    if (focus && focus.categoryId === cat.id) { focus.blockId = b.id; return; }
+    data.settings.focus = { categoryId: cat.id, blockId: b.id, snapshot: focus ? focus.snapshot : currentToggleSnapshot() };
+    data.categories.forEach(c => { c.enabled = c.id === cat.id; });
+    data.settings.showUncategorized = false;
+  }
+
+  function restoreFocusSnapshot() {
+    const focus = data.settings.focus;
+    if (!focus) return;
+    const snap = focus.snapshot;
+    data.categories.forEach(c => { c.enabled = Object.prototype.hasOwnProperty.call(snap.enabled, c.id) ? !!snap.enabled[c.id] : true; });
+    data.settings.showUncategorized = snap.showUncategorized;
+    data.settings.focus = null;
+  }
+
+  function exitFocus() {
+    if (!data.settings.focus) return;
+    restoreFocusSnapshot();
+    commit();
+  }
+
+  function renderFocusBanner() {
+    const focus = data.settings.focus;
+    const cat = focus ? getCategory(focus.categoryId) : null;
+    el.focusBanner.hidden = !cat;
+    if (!cat) return;
+    const b = focus.blockId ? getBlock(focus.blockId) : null;
+    el.focusBanner.innerHTML = `<span class="cat-chip" style="--cat:${cat.color}">${escapeHtml(cat.name)}</span>`
+      + `<span>Showing only this category${b ? ` while “${escapeHtml(b.title)}” is on` : ''}.</span>`
+      + '<button type="button" class="link-btn" data-action="exit-focus">Show everything again</button>';
   }
 
   function addCategory(name, color) {
@@ -720,6 +785,8 @@
     });
     if (!ok) return;
     data.tasks.forEach(t => { if (t.categoryId === id) { t.categoryId = null; t.updatedAt = nowIso(); } });
+    data.blocks.forEach(b => { if (b.categoryId === id) { b.categoryId = null; b.updatedAt = nowIso(); } });
+    if (data.settings.focus && data.settings.focus.categoryId === id) data.settings.focus = null;
     data.categories = data.categories.filter(x => x.id !== id);
     commit();
     toast(`Deleted category “${truncate(c.name)}”`);
@@ -803,7 +870,7 @@
         el.searchInput.value = '';
         const c = getCategory(t.categoryId);
         if (c) c.enabled = true;
-        updateSettings({ view: 'all', priorityFilter: 'all', showUncategorized: c ? data.settings.showUncategorized : true });
+        updateSettings({ view: 'all', priorityFilter: 'all', showUncategorized: c ? data.settings.showUncategorized : true, focus: null });
       },
     });
   }
@@ -882,7 +949,7 @@
     el.taskSaveBtn.textContent = t ? 'Save changes' : 'Add task';
     el.taskDeleteBtn.hidden = !t;
     el.taskScheduleBtn.hidden = !t;
-    fillCategorySelect(t ? t.categoryId : (d.categoryId || defaultCategoryId()));
+    fillCategorySelect(el.taskCategory, t ? t.categoryId : (d.categoryId || defaultCategoryId()));
     el.taskTitle.value = t ? t.title : (d.title || '');
     el.taskNotes.value = t ? t.notes : '';
     el.taskDue.value = t ? (t.dueDate || '') : (d.dueDate || defaultDueDate() || '');
@@ -891,10 +958,21 @@
     el.taskTitle.focus();
   }
 
-  function fillCategorySelect(selectedId) {
-    el.taskCategory.innerHTML = ['<option value="">No category</option>']
+  function fillCategorySelect(select, selectedId) {
+    select.innerHTML = ['<option value="">No category</option>']
       .concat(data.categories.map(c => `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`))
       .join('');
+  }
+
+  /** Check the swatch matching a colour, falling back to the custom one. */
+  function selectSwatch(container, color) {
+    const preset = container.querySelector(`input[type="radio"][value="${color}"]`);
+    if (preset) { preset.checked = true; return; }
+    const custom = container.querySelector('.swatch.custom');
+    if (!custom) return;
+    custom.querySelector('input[type="radio"]').checked = true;
+    custom.querySelector('input[type="color"]').value = color;
+    custom.style.setProperty('--cat', color);
   }
 
   function setRadio(form, name, value) {
@@ -1058,7 +1136,7 @@
     const snapshot = JSON.parse(JSON.stringify(data));
     let summary;
     if (mode === 'replace') {
-      data = { version: SCHEMA_VERSION, categories: inc.categories, tasks: inc.tasks, blocks: inc.blocks, settings: data.settings };
+      data = { version: SCHEMA_VERSION, categories: inc.categories, tasks: inc.tasks, blocks: inc.blocks, settings: Object.assign({}, data.settings, { focus: null }) };
       summary = `Replaced everything with ${plural(inc.tasks.length, 'task')}, ${plural(inc.categories.length, 'category', 'categories')} and ${plural(inc.blocks.length, 'time block')}`;
     } else {
       const r = mergeInto(data, inc);
@@ -1090,6 +1168,7 @@
     }
     r.blocks = { added: 0, updated: 0 };
     for (const b of inc.blocks) {
+      b.categoryId = b.categoryId ? (idMap.get(b.categoryId) || null) : null;
       const idx = target.blocks.findIndex(x => x.id === b.id);
       if (idx < 0) { target.blocks.push(b); r.blocks.added++; }
       else if (b.updatedAt > target.blocks[idx].updatedAt) { target.blocks[idx] = b; r.blocks.updated++; }
@@ -1108,7 +1187,7 @@
     });
     if (!ok) return;
     const snapshot = data;
-    data = normalizeData({ settings: data.settings });
+    data = normalizeData({ settings: Object.assign({}, data.settings, { focus: null }) });
     commit();
     toast('All data cleared', { action: 'Undo', onAction: () => { data = snapshot; commit(); } });
   }
@@ -1116,7 +1195,7 @@
   // ---------- Sample data ----------
 
   function loadSampleData() {
-    const wanted = [['Work', '#3b82f6'], ['Personal', '#22c55e'], ['Home', '#f97316'], ['Health', '#ec4899']];
+    const wanted = [['Work', '#3b82f6'], ['Personal', '#22c55e'], ['Home', '#f97316'], ['Health', '#ec4899'], ['Study', '#8b5cf6']];
     const cat = {};
     for (const [name, color] of wanted) {
       let c = data.categories.find(x => x.name.toLowerCase() === name.toLowerCase());
@@ -1135,6 +1214,7 @@
       { title: 'Buy a birthday present for Sam', categoryId: null, priority: 'high', dueDate: d(9) },
       { title: 'Read “Deep Work”, chapter 3', categoryId: cat.Personal, priority: 'low', dueDate: null },
       { title: 'Water the plants', categoryId: cat.Home, priority: 'low', dueDate: d(-2), completed: true },
+      { title: 'Finish maths exercises 4–6', categoryId: cat.Study, priority: 'high', dueDate: d(0) },
     ];
     const ids = categoryIdSet();
     const base = Date.now();
@@ -1145,14 +1225,15 @@
     });
 
     if (data.blocks.length === 0) {
+      const maths = created.find(t => t.title.indexOf('maths') >= 0) || null;
       const sampleBlocks = [
-        { title: 'Deep work', start: '09:00', end: '11:30', days: [1, 2, 3, 4, 5], color: '#3b82f6', taskId: created[0] ? created[0].id : null },
-        { title: 'Lunch & a walk', start: '12:30', end: '13:30', days: [1, 2, 3, 4, 5], color: '#22c55e' },
-        { title: 'Homework', start: '15:00', end: '20:00', days: [1, 2, 3, 4], color: '#8b5cf6', notes: 'Phone in the other room.' },
-        { title: 'Gym', start: '18:00', end: '19:00', days: [5], color: '#ec4899' },
+        { title: 'Deep work', start: '09:00', end: '11:30', days: [1, 2, 3, 4, 5], color: '#3b82f6', categoryId: cat.Work, taskId: created[0] ? created[0].id : null },
+        { title: 'Lunch & a walk', start: '12:30', end: '13:30', days: [1, 2, 3, 4, 5], color: '#22c55e', categoryId: cat.Health },
+        { title: 'Homework', start: '15:00', end: '20:00', days: [1, 2, 3, 4], color: '#8b5cf6', categoryId: cat.Study, taskId: maths ? maths.id : null, notes: 'Phone in the other room.' },
+        { title: 'Gym', start: '18:00', end: '19:00', days: [5], color: '#ec4899', categoryId: cat.Health },
       ];
       sampleBlocks.forEach((s, i) => {
-        const b = normalizeBlock(s, i, taskIdSet());
+        const b = normalizeBlock(s, i, taskIdSet(), categoryIdSet());
         if (b && !data.blocks.some(x => blocksConflict(b, x))) data.blocks.push(b);
       });
     }
@@ -1168,7 +1249,7 @@
 
   function addBlock(fields) {
     const now = nowIso();
-    const b = normalizeBlock(Object.assign({}, fields, { id: null, createdAt: now, updatedAt: now }), data.blocks.length, taskIdSet());
+    const b = normalizeBlock(Object.assign({}, fields, { id: null, createdAt: now, updatedAt: now }), data.blocks.length, taskIdSet(), categoryIdSet());
     if (!b) return null;
     data.blocks.push(b);
     commit();
@@ -1178,7 +1259,7 @@
   function updateBlock(id, patch) {
     const b = getBlock(id);
     if (!b) return;
-    const next = normalizeBlock(Object.assign({}, b, patch, { updatedAt: nowIso() }), 0, taskIdSet());
+    const next = normalizeBlock(Object.assign({}, b, patch, { updatedAt: nowIso() }), 0, taskIdSet(), categoryIdSet());
     if (!next) return;
     Object.assign(b, next);
     commit();
@@ -1237,7 +1318,8 @@
     el.blockDate.value = b && b.date ? b.date : (d.date || ui.scheduleDate);
     updateRepeatUI();
     fillTaskSelect(b ? b.taskId : (d.taskId || null));
-    renderSwatches(el.blockColors, b ? b.color : CATEGORY_COLORS[(data.blocks.length + 2) % CATEGORY_COLORS.length]);
+    fillCategorySelect(el.blockCategory, b ? b.categoryId : (d.categoryId || null));
+    renderSwatches(el.blockColors, b ? b.color : (d.color || CATEGORY_COLORS[(data.blocks.length + 2) % CATEGORY_COLORS.length]));
     el.blockNotes.value = b ? b.notes : '';
     el.blockNotify.checked = b ? b.notify : true;
     el.blockDialog.showModal();
@@ -1291,11 +1373,12 @@
       days,
       date,
       taskId: el.blockTask.value || null,
+      categoryId: el.blockCategory.value || null,
       color: choice === 'custom' && custom ? custom.value : choice,
       notes: el.blockNotes.value.trim(),
       notify: el.blockNotify.checked,
     };
-    const candidate = normalizeBlock(fields, data.blocks.length, taskIdSet());
+    const candidate = normalizeBlock(fields, data.blocks.length, taskIdSet(), categoryIdSet());
     const clash = candidate && data.blocks.find(x => x.id !== ui.editingBlockId && blocksConflict(candidate, x));
     if (clash) {
       const when = clash.date ? formatShortDate(clash.date) : fmtDays(clash.days);
@@ -1374,6 +1457,11 @@
     return `<div class="timeline"><div class="timeline-bar">${segs}${marker}</div><div class="timeline-ticks">${ticks}</div></div>`;
   }
 
+  function blockCategoryChip(b) {
+    const c = b.categoryId ? getCategory(b.categoryId) : null;
+    return c ? `<span class="cat-chip" style="--cat:${c.color}">${escapeHtml(c.name)}</span>` : '';
+  }
+
   function linkedTaskHtml(b) {
     const t = b.taskId ? getTask(b.taskId) : null;
     if (!t) return '';
@@ -1384,6 +1472,7 @@
     const s = hmToMin(b.start), e = hmToMin(b.end);
     const state = now == null ? '' : (e <= now ? 'past' : (s <= now ? 'current' : ''));
     const meta = [
+      blockCategoryChip(b),
       `<span>${fmtDuration(e - s)}</span>`,
       `<span>${icon(b.date ? 'calendar' : 'repeat', 13)}${escapeHtml(b.date ? formatShortDate(b.date) + ' only' : fmtDays(b.days))}</span>`,
       linkedTaskHtml(b),
@@ -1418,7 +1507,7 @@
           <span class="now-label">Now</span>
           <div class="now-main">
             <h3>${escapeHtml(b.title)}</h3>
-            <div class="now-time">${escapeHtml(fmtRange(b))} · ends in ${fmtDuration(e - now)}</div>
+            <div class="now-time">${blockCategoryChip(b)} ${escapeHtml(fmtRange(b))} · ends in ${fmtDuration(e - now)}</div>
             ${t ? `<div class="now-task">Work on: ${linkedTaskHtml(b)}${t.completed ? '<span>(done)</span>' : `<button type="button" class="chip-btn" data-task-done="${t.id}">Mark done</button>`}</div>` : ''}
             <div class="progress" role="progressbar" aria-valuenow="${Math.round(progress)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${progress.toFixed(1)}%"></span></div>
           </div>
@@ -1434,7 +1523,7 @@
           <span class="now-label">Up next</span>
           <div class="now-main">
             <h3>${escapeHtml(n.title)}</h3>
-            <div class="now-time">${escapeHtml(fmtRange(n))} · starts in ${fmtDuration(hmToMin(n.start) - now)}</div>
+            <div class="now-time">${blockCategoryChip(n)} ${escapeHtml(fmtRange(n))} · starts in ${fmtDuration(hmToMin(n.start) - now)}</div>
             ${n.taskId && getTask(n.taskId) ? `<div class="now-task">Work on: ${linkedTaskHtml(n)}</div>` : ''}
           </div>
           <div class="now-next">Free until then</div>
@@ -1738,7 +1827,7 @@
     switch (b.dataset.action) {
       case 'load-sample':    loadSampleData(); break;
       case 'clear-search':   ui.search = ''; el.searchInput.value = ''; renderList(); break;
-      case 'reset-filters':  data.categories.forEach(c => { c.enabled = true; }); updateSettings({ showUncategorized: true, priorityFilter: 'all' }); break;
+      case 'reset-filters':  data.categories.forEach(c => { c.enabled = true; }); updateSettings({ showUncategorized: true, priorityFilter: 'all', focus: null }); break;
       case 'show-completed': updateSettings({ showCompleted: true }); break;
     }
   }
@@ -1772,7 +1861,7 @@
       case 'n': case 'N': e.preventDefault(); if (data.settings.mode === 'schedule') openBlockDialog(); else openTaskDialog(); break;
       case 'a': case 'A': e.preventDefault(); setMode('tasks'); el.quickAddInput.focus(); break;
       case '/':           e.preventDefault(); setMode('tasks'); el.searchInput.focus(); el.searchInput.select(); break;
-      case 't': case 'T': e.preventDefault(); setMode('tasks'); break;
+      case 't': case 'T': e.preventDefault(); setMode('tasks', { focus: true }); break;
       case 's': case 'S': e.preventDefault(); setMode('schedule'); break;
       case '?':           e.preventDefault(); el.helpDialog.showModal(); break;
     }
@@ -1788,8 +1877,9 @@
     el.newTaskBtn.addEventListener('click', () => (data.settings.mode === 'schedule' ? openBlockDialog() : openTaskDialog()));
     el.modeSwitch.addEventListener('click', e => {
       const b = e.target.closest('[data-mode]');
-      if (b) setMode(b.dataset.mode);
+      if (b) setMode(b.dataset.mode, { focus: true });
     });
+    el.focusBanner.addEventListener('click', e => { if (e.target.closest('[data-action="exit-focus"]')) exitFocus(); });
     el.themeToggle.addEventListener('click', toggleTheme);
     el.overdueBadge.addEventListener('click', () => setView('overdue'));
     el.searchInput.addEventListener('input', () => { ui.search = el.searchInput.value; renderList(); });
@@ -1869,6 +1959,19 @@
       const end = isHm(el.blockEnd.value) ? hmToMin(el.blockEnd.value) : null;
       if (start != null && (end == null || end <= start)) el.blockEnd.value = minToHm(Math.min(start + 60, 23 * 60 + 59));
     });
+    el.blockCategory.addEventListener('change', () => {
+      // A category tints the block with its colour (the colour can still be changed afterwards)
+      const c = getCategory(el.blockCategory.value);
+      if (c) selectSwatch(el.blockColors, c.color);
+    });
+    el.blockTask.addEventListener('change', () => {
+      // Picking a task fills in its category when none is chosen yet
+      const t = getTask(el.blockTask.value);
+      if (!t || !t.categoryId || el.blockCategory.value) return;
+      el.blockCategory.value = t.categoryId;
+      const c = getCategory(t.categoryId);
+      if (c) selectSwatch(el.blockColors, c.color);
+    });
     el.blockDeleteBtn.addEventListener('click', () => {
       const id = ui.editingBlockId;
       el.blockDialog.close();
@@ -1878,8 +1981,9 @@
       const t = getTask(ui.editingTaskId);
       el.taskDialog.close();
       if (!t) return;
+      const c = getCategory(t.categoryId);
       setMode('schedule');
-      openBlockDialog(null, { taskId: t.id, title: t.title });
+      openBlockDialog(null, { taskId: t.id, title: t.title, categoryId: t.categoryId, color: c ? c.color : null });
     });
     el.remindEnableBtn.addEventListener('click', () => requestNotificationPermission());
     el.remindLead.addEventListener('change', () => updateSettings({ remindMinutes: +el.remindLead.value }));

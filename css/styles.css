@@ -665,6 +665,23 @@ button.cat-name:hover { color: var(--accent); text-decoration: underline; }
 .stat.alert .stat-label { color: var(--danger); }
 .stat.warn .stat-value { color: var(--warn); }
 
+/* Banner shown while Tasks is narrowed to the running block's category */
+.focus-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px 12px;
+  margin: -6px 0 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: 13px;
+  color: var(--text-2);
+}
+.focus-banner .link-btn { margin-left: auto; }
+.field-hint { margin-top: -6px; }
+
 /* ---------- Toolbar ---------- */
 
 .toolbar {
