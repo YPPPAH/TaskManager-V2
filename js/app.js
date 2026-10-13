@@ -9,7 +9,7 @@
   // ---------- Constants ----------
 
   const STORAGE_KEY = 'taskmanager-v2';
-  const SCHEMA_VERSION = 1;
+  const SCHEMA_VERSION = 2;
   const UNDO_MS = 6000;
   const ID_RE = /^[A-Za-z0-9_.:-]{1,80}$/;
 
@@ -37,6 +37,13 @@
   const SORTS = ['due', 'priority', 'created', 'title'];
   const THEMES = ['system', 'light', 'dark'];
   const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const MODES = ['tasks', 'schedule'];
+  const REMIND_OPTIONS = [0, 5, 10, 15, 30, 60]; // minutes before a block switch
+  const REMIND_TOLERANCE_MIN = 2;                 // still fire up to this long after the moment (timer throttling, wake from sleep)
+  const FIRED_KEY = STORAGE_KEY + ':fired';
+  const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];          // 0 = Sunday, as in Date#getDay
+  const WEEKDAY_SHORT = ALL_DAYS.map(i => new Date(2023, 0, 1 + i).toLocaleDateString(undefined, { weekday: 'short' })); // 2023-01-01 was a Sunday
+  const WEEKDAY_LONG = ALL_DAYS.map(i => new Date(2023, 0, 1 + i).toLocaleDateString(undefined, { weekday: 'long' }));
 
   const DEFAULT_SETTINGS = {
     theme: 'system',          // 'system' | 'light' | 'dark'
@@ -45,6 +52,9 @@
     priorityFilter: 'all',    // 'all' | priority key
     showCompleted: false,     // include completed tasks in All / Today / Upcoming
     showUncategorized: true,  // toggle for tasks without a category
+    mode: 'tasks',            // 'tasks' | 'schedule'
+    remindMinutes: 10,        // schedule reminders fire this many minutes before a block starts / ends
+    reminderSound: true,      // also play a short sound with each reminder
   };
 
   const ICON_PATHS = {
@@ -60,6 +70,13 @@
     'sun':          '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
     'moon':         '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
     'x':            '<path d="M18 6 6 18M6 6l12 12"/>',
+    'plus':         '<path d="M12 5v14M5 12h14"/>',
+    'clock':        '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+    'bell':         '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+    'bell-off':     '<path d="M13.73 21a2 2 0 0 1-3.46 0M18.63 13A17.9 17.9 0 0 1 18 8M6.26 6.26A6 6 0 0 0 6 8c0 7-3 9-3 9h14M18 8a6 6 0 0 0-9.33-5M2 2l20 20"/>',
+    'chevron-left': '<path d="m15 18-6-6 6-6"/>',
+    'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+    'repeat':       '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
   };
 
   function icon(name, size) {
@@ -72,7 +89,7 @@
   const el = {};
   document.querySelectorAll('[id]').forEach(node => { el[node.id] = node; });
 
-  let data = loadData(); // { version, categories, tasks, settings }
+  let data = loadData(); // { version, categories, tasks, blocks, settings }
 
   const ui = {
     today: todayStr(),
@@ -80,6 +97,9 @@
     editingTaskId: null,
     editingCategoryId: null,
     pendingImport: null,
+    editingBlockId: null,
+    scheduleDate: todayStr(), // the day shown in the schedule view
+    fired: loadFired(),       // reminder keys already delivered today
   };
 
   // ---------- Small helpers ----------
@@ -131,6 +151,33 @@
     else form.dispatchEvent(new Event('submit', { cancelable: true }));
   }
 
+  // Clock-time helpers. Block times are stored as 'HH:MM'; maths is done in minutes since midnight.
+  function isHm(s) { return typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s); }
+  function hmToMin(s) { const p = s.split(':'); return (+p[0]) * 60 + (+p[1]); }
+  function minToHm(m) { return pad(Math.floor(m / 60)) + ':' + pad(m % 60); }
+  function nowMinutes() { const d = new Date(); return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60; }
+  function weekdayOf(dateStr) { return parseDateStr(dateStr).getDay(); }
+  function startOfWeek(dateStr) { return addDays(dateStr, -((weekdayOf(dateStr) + 6) % 7)); } // Monday
+  function fmtTime(min) {
+    return new Date(2000, 0, 1, Math.floor(min / 60), Math.floor(min % 60)).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+  function fmtHour(h) { return new Date(2000, 0, 1, h).toLocaleTimeString(undefined, { hour: 'numeric' }); }
+  function fmtDuration(min) {
+    const m = Math.max(0, Math.round(min));
+    const h = Math.floor(m / 60), r = m % 60;
+    return h ? (r ? `${h}h ${r}m` : `${h}h`) : `${r} min`;
+  }
+  function fmtRange(b) { return `${fmtTime(hmToMin(b.start))}–${fmtTime(hmToMin(b.end))}`; }
+  function fmtDays(days) {
+    if (days.length === 7) return 'Every day';
+    const key = days.join(',');
+    if (key === '1,2,3,4,5') return 'Weekdays';
+    if (key === '0,6') return 'Weekends';
+    return days.slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map(d => WEEKDAY_SHORT[d]).join(', ');
+  }
+  function getBlock(id) { return data.blocks.find(b => b.id === id) || null; }
+  function taskIdSet() { return new Set(data.tasks.map(t => t.id)); }
+
   // ---------- Persistence & normalization ----------
 
   function loadData() {
@@ -152,7 +199,7 @@
 
   /** Turns anything (saved data, an imported file, nothing) into a valid data object. */
   function normalizeData(raw) {
-    const out = { version: SCHEMA_VERSION, categories: [], tasks: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
+    const out = { version: SCHEMA_VERSION, categories: [], tasks: [], blocks: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
     if (!raw || typeof raw !== 'object') return out;
 
     const catIds = new Set();
@@ -167,6 +214,13 @@
       for (const t of raw.tasks) {
         const task = normalizeTask(t, catIds);
         if (task && !taskIds.has(task.id)) { taskIds.add(task.id); out.tasks.push(task); }
+      }
+    }
+    const blockIds = new Set();
+    if (Array.isArray(raw.blocks)) {
+      for (const b of raw.blocks) {
+        const block = normalizeBlock(b, out.blocks.length, taskIds);
+        if (block && !blockIds.has(block.id)) { blockIds.add(block.id); out.blocks.push(block); }
       }
     }
     if (raw.settings && typeof raw.settings === 'object') out.settings = normalizeSettings(raw.settings);
@@ -210,6 +264,32 @@
     };
   }
 
+  function normalizeBlock(b, index, taskIds) {
+    if (!b || typeof b !== 'object') return null;
+    const title = String(b.title == null ? '' : b.title).trim().slice(0, 80);
+    if (!title || !isHm(b.start) || !isHm(b.end) || hmToMin(b.end) <= hmToMin(b.start)) return null;
+    const date = isDateStr(b.date) ? b.date : null;
+    let days = Array.isArray(b.days)
+      ? Array.from(new Set(b.days.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6))).sort((x, y) => x - y)
+      : ALL_DAYS.slice();
+    if (!days.length) days = ALL_DAYS.slice();
+    const created = isoOr(b.createdAt, nowIso());
+    return {
+      id: normalizeId(b.id, 'b'),
+      title,
+      start: b.start,
+      end: b.end,
+      days,              // weekdays the block repeats on (ignored when `date` is set)
+      date,              // 'YYYY-MM-DD' for a one-off block, otherwise null
+      color: isHexColor(b.color) ? b.color.toLowerCase() : CATEGORY_COLORS[(index || 0) % CATEGORY_COLORS.length],
+      taskId: typeof b.taskId === 'string' && taskIds.has(b.taskId) ? b.taskId : null,
+      notes: String(b.notes == null ? '' : b.notes).slice(0, 500),
+      notify: b.notify !== false,
+      createdAt: created,
+      updatedAt: isoOr(b.updatedAt, created),
+    };
+  }
+
   function normalizePriority(p) {
     if (typeof p === 'number' && isFinite(p)) return PRIORITY_ORDER[Math.max(0, Math.min(3, Math.round(p)))];
     const s = String(p == null ? '' : p).toLowerCase();
@@ -225,6 +305,9 @@
     if (s.priorityFilter === 'all' || PRIORITY_ORDER.includes(s.priorityFilter)) out.priorityFilter = s.priorityFilter;
     if (typeof s.showCompleted === 'boolean') out.showCompleted = s.showCompleted;
     if (typeof s.showUncategorized === 'boolean') out.showUncategorized = s.showUncategorized;
+    if (MODES.includes(s.mode)) out.mode = s.mode;
+    if (REMIND_OPTIONS.includes(s.remindMinutes)) out.remindMinutes = s.remindMinutes;
+    if (typeof s.reminderSound === 'boolean') out.reminderSound = s.reminderSound;
     return out;
   }
 
@@ -347,17 +430,80 @@
     return info;
   }
 
+  // ---------- Schedule: derived data ----------
+
+  function blocksForDate(dateStr) {
+    const wd = weekdayOf(dateStr);
+    return data.blocks
+      .filter(b => (b.date ? b.date === dateStr : b.days.includes(wd)))
+      .sort((a, b) => hmToMin(a.start) - hmToMin(b.start) || hmToMin(a.end) - hmToMin(b.end));
+  }
+
+  /** Moments a reminder can fire for: each block's start, and its end — a "switch" when the next block begins right then. */
+  function scheduleEvents(dateStr) {
+    const blocks = blocksForDate(dateStr);
+    const events = [];
+    blocks.forEach((b, i) => {
+      const prev = blocks[i - 1], next = blocks[i + 1];
+      if (!(prev && prev.end === b.start)) events.push({ kind: 'start', at: hmToMin(b.start), block: b, next: null });
+      if (next && next.start === b.end) events.push({ kind: 'switch', at: hmToMin(b.end), block: b, next });
+      else events.push({ kind: 'end', at: hmToMin(b.end), block: b, next: next || null });
+    });
+    return events;
+  }
+
+  function currentBlockInfo(now) {
+    const blocks = blocksForDate(ui.today);
+    return {
+      blocks,
+      current: blocks.find(b => hmToMin(b.start) <= now && now < hmToMin(b.end)) || null,
+      next: blocks.find(b => hmToMin(b.start) > now) || null,
+    };
+  }
+
+  function blocksShareDay(a, b) {
+    if (a.date && b.date) return a.date === b.date;
+    if (a.date) return b.days.includes(weekdayOf(a.date));
+    if (b.date) return a.days.includes(weekdayOf(b.date));
+    return a.days.some(d => b.days.includes(d));
+  }
+  function blocksConflict(a, b) {
+    return blocksShareDay(a, b) && hmToMin(a.start) < hmToMin(b.end) && hmToMin(b.start) < hmToMin(a.end);
+  }
+
   // ---------- Rendering ----------
 
   function render() {
-    ui.today = todayStr();
+    const today = todayStr();
+    if (today !== ui.today) {
+      if (ui.scheduleDate === ui.today) ui.scheduleDate = today;
+      ui.today = today;
+    }
     const counts = computeCounts();
     renderTopbar(counts);
+    renderMode();
     renderViews(counts);
     renderCategories(counts);
     renderStats(counts);
     renderToolbar();
     renderList();
+    renderSchedule();
+    renderReminderSettings();
+  }
+
+  function renderMode() {
+    const mode = data.settings.mode;
+    document.body.dataset.mode = mode;
+    el.tasksPanel.hidden = mode !== 'tasks';
+    el.schedulePanel.hidden = mode !== 'schedule';
+    el.modeSwitch.querySelectorAll('[data-mode]').forEach(b => {
+      const on = b.dataset.mode === mode;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', String(on));
+    });
+    const label = mode === 'schedule' ? 'New block' : 'New task';
+    el.newTaskBtn.querySelector('.btn-label').textContent = label;
+    el.newTaskBtn.title = label + ' (N)';
   }
 
   function renderTopbar(counts) {
@@ -524,7 +670,12 @@
 
   function setView(key) {
     if (!VIEW_KEYS.includes(key)) return;
-    updateSettings({ view: key });
+    updateSettings({ view: key, mode: 'tasks' });
+  }
+
+  function setMode(mode) {
+    if (!MODES.includes(mode) || mode === data.settings.mode) return;
+    updateSettings({ mode });
   }
 
   function setCategoryEnabled(id, enabled) {
@@ -730,6 +881,7 @@
     el.taskDialogTitle.textContent = t ? 'Edit task' : 'New task';
     el.taskSaveBtn.textContent = t ? 'Save changes' : 'Add task';
     el.taskDeleteBtn.hidden = !t;
+    el.taskScheduleBtn.hidden = !t;
     fillCategorySelect(t ? t.categoryId : (d.categoryId || defaultCategoryId()));
     el.taskTitle.value = t ? t.title : (d.title || '');
     el.taskNotes.value = t ? t.notes : '';
@@ -784,14 +936,14 @@
     el.categorySaveBtn.textContent = c ? 'Save changes' : 'Add category';
     el.categoryDeleteBtn.hidden = !c;
     el.categoryName.value = c ? c.name : '';
-    renderSwatches(c ? c.color : CATEGORY_COLORS[data.categories.length % CATEGORY_COLORS.length]);
+    renderSwatches(el.categoryColors, c ? c.color : CATEGORY_COLORS[data.categories.length % CATEGORY_COLORS.length]);
     el.categoryDialog.showModal();
     el.categoryName.focus();
   }
 
-  function renderSwatches(selected) {
+  function renderSwatches(container, selected) {
     const isPreset = CATEGORY_COLORS.includes(selected);
-    el.categoryColors.innerHTML = CATEGORY_COLORS.map(c => `
+    container.innerHTML = CATEGORY_COLORS.map(c => `
       <label class="swatch" style="--cat:${c}" title="${c}">
         <input type="radio" name="color" value="${c}" ${c === selected ? 'checked' : ''}><span></span>
       </label>`).join('') + `
@@ -857,6 +1009,7 @@
       exportedAt: nowIso(),
       categories: data.categories,
       tasks: data.tasks,
+      blocks: data.blocks,
     };
     downloadFile(`tasks-${ui.today}.json`, JSON.stringify(payload, null, 2), 'application/json');
     toast(`Exported ${plural(data.tasks.length, 'task')} as JSON`);
@@ -886,12 +1039,12 @@
       try { raw = JSON.parse(String(reader.result)); }
       catch (e) { toast(`“${truncate(file.name)}” is not valid JSON.`, { type: 'error' }); return; }
       const incoming = normalizeData(raw);
-      if (!incoming.tasks.length && !incoming.categories.length) {
-        toast('No tasks or categories were found in that file.', { type: 'error' });
+      if (!incoming.tasks.length && !incoming.categories.length && !incoming.blocks.length) {
+        toast('No tasks, categories or time blocks were found in that file.', { type: 'error' });
         return;
       }
       ui.pendingImport = incoming;
-      el.importSummary.textContent = `“${file.name}” contains ${plural(incoming.tasks.length, 'task')} and ${plural(incoming.categories.length, 'category', 'categories')}.`;
+      el.importSummary.textContent = `“${file.name}” contains ${plural(incoming.tasks.length, 'task')}, ${plural(incoming.categories.length, 'category', 'categories')} and ${plural(incoming.blocks.length, 'time block')}.`;
       setRadio(el.importForm, 'importMode', 'merge');
       el.importDialog.showModal();
     };
@@ -905,11 +1058,12 @@
     const snapshot = JSON.parse(JSON.stringify(data));
     let summary;
     if (mode === 'replace') {
-      data = { version: SCHEMA_VERSION, categories: inc.categories, tasks: inc.tasks, settings: data.settings };
-      summary = `Replaced everything with ${plural(inc.tasks.length, 'task')} and ${plural(inc.categories.length, 'category', 'categories')}`;
+      data = { version: SCHEMA_VERSION, categories: inc.categories, tasks: inc.tasks, blocks: inc.blocks, settings: data.settings };
+      summary = `Replaced everything with ${plural(inc.tasks.length, 'task')}, ${plural(inc.categories.length, 'category', 'categories')} and ${plural(inc.blocks.length, 'time block')}`;
     } else {
       const r = mergeInto(data, inc);
-      summary = `Imported ${plural(r.added, 'new task')}, updated ${r.updated}, left ${r.unchanged} unchanged`;
+      summary = `Imported ${plural(r.added, 'new task')}, updated ${r.updated}, left ${r.unchanged} unchanged`
+        + (r.blocks.added || r.blocks.updated ? `; ${r.blocks.added + r.blocks.updated} time block(s) added or updated` : '');
     }
     ui.pendingImport = null;
     el.importDialog.close();
@@ -934,13 +1088,21 @@
       else if (t.updatedAt > target.tasks[idx].updatedAt) { target.tasks[idx] = t; r.updated++; }
       else r.unchanged++;
     }
+    r.blocks = { added: 0, updated: 0 };
+    for (const b of inc.blocks) {
+      const idx = target.blocks.findIndex(x => x.id === b.id);
+      if (idx < 0) { target.blocks.push(b); r.blocks.added++; }
+      else if (b.updatedAt > target.blocks[idx].updatedAt) { target.blocks[idx] = b; r.blocks.updated++; }
+    }
+    const ids = new Set(target.tasks.map(t => t.id));
+    target.blocks.forEach(b => { if (b.taskId && !ids.has(b.taskId)) b.taskId = null; });
     return r;
   }
 
   async function clearAllData() {
     const ok = await confirmDialog({
       title: 'Clear all data?',
-      message: `This removes ${plural(data.tasks.length, 'task')} and ${plural(data.categories.length, 'category', 'categories')} from this browser. You can undo for a few seconds afterwards.`,
+      message: `This removes ${plural(data.tasks.length, 'task')}, ${plural(data.categories.length, 'category', 'categories')} and ${plural(data.blocks.length, 'time block')} from this browser. You can undo for a few seconds afterwards.`,
       okLabel: 'Clear everything',
       danger: true,
     });
@@ -976,12 +1138,486 @@
     ];
     const ids = categoryIdSet();
     const base = Date.now();
+    const created = [];
     samples.forEach((s, i) => {
       const t = normalizeTask(Object.assign({}, s, { createdAt: new Date(base - i * 60000).toISOString() }), ids);
-      if (t) data.tasks.push(t);
+      if (t) { data.tasks.push(t); created.push(t); }
     });
+
+    if (data.blocks.length === 0) {
+      const sampleBlocks = [
+        { title: 'Deep work', start: '09:00', end: '11:30', days: [1, 2, 3, 4, 5], color: '#3b82f6', taskId: created[0] ? created[0].id : null },
+        { title: 'Lunch & a walk', start: '12:30', end: '13:30', days: [1, 2, 3, 4, 5], color: '#22c55e' },
+        { title: 'Homework', start: '15:00', end: '20:00', days: [1, 2, 3, 4], color: '#8b5cf6', notes: 'Phone in the other room.' },
+        { title: 'Gym', start: '18:00', end: '19:00', days: [5], color: '#ec4899' },
+      ];
+      sampleBlocks.forEach((s, i) => {
+        const b = normalizeBlock(s, i, taskIdSet());
+        if (b && !data.blocks.some(x => blocksConflict(b, x))) data.blocks.push(b);
+      });
+    }
     commit();
-    toast(`Loaded ${plural(samples.length, 'sample task')}`);
+    toast(`Loaded ${plural(samples.length, 'sample task')} and a sample schedule`);
+  }
+
+  // ==========================================================================
+  // Schedule: time blocks, the day view and reminders
+  // ==========================================================================
+
+  // ---------- Blocks: actions ----------
+
+  function addBlock(fields) {
+    const now = nowIso();
+    const b = normalizeBlock(Object.assign({}, fields, { id: null, createdAt: now, updatedAt: now }), data.blocks.length, taskIdSet());
+    if (!b) return null;
+    data.blocks.push(b);
+    commit();
+    return b;
+  }
+
+  function updateBlock(id, patch) {
+    const b = getBlock(id);
+    if (!b) return;
+    const next = normalizeBlock(Object.assign({}, b, patch, { updatedAt: nowIso() }), 0, taskIdSet());
+    if (!next) return;
+    Object.assign(b, next);
+    commit();
+  }
+
+  function deleteBlock(id) {
+    const idx = data.blocks.findIndex(b => b.id === id);
+    if (idx < 0) return;
+    const removed = data.blocks.splice(idx, 1)[0];
+    commit();
+    toast(`Deleted block “${truncate(removed.title)}”`, {
+      action: 'Undo',
+      onAction: () => {
+        if (getBlock(removed.id)) return;
+        data.blocks.splice(Math.min(idx, data.blocks.length), 0, removed);
+        commit();
+      },
+    });
+  }
+
+  /** Move the day view to a day the block actually appears on, so a just-saved block is visible. */
+  function revealBlock(b) {
+    if (b.date) { ui.scheduleDate = b.date; return; }
+    if (b.days.includes(weekdayOf(ui.scheduleDate))) return;
+    for (let i = 1; i < 7; i++) {
+      const d = addDays(ui.scheduleDate, i);
+      if (b.days.includes(weekdayOf(d))) { ui.scheduleDate = d; return; }
+    }
+  }
+
+  // ---------- Blocks: editor dialog ----------
+
+  function suggestedStart() {
+    const blocks = blocksForDate(ui.scheduleDate);
+    if (blocks.length) {
+      const last = hmToMin(blocks[blocks.length - 1].end);
+      if (last <= 22 * 60) return minToHm(last);
+    }
+    if (ui.scheduleDate === ui.today) return minToHm(Math.min(Math.ceil(nowMinutes() / 60) * 60, 22 * 60));
+    return '09:00';
+  }
+
+  function openBlockDialog(blockId, defaults) {
+    const b = blockId ? getBlock(blockId) : null;
+    const d = defaults || {};
+    ui.editingBlockId = b ? b.id : null;
+    el.blockDialogTitle.textContent = b ? 'Edit time block' : 'New time block';
+    el.blockSaveBtn.textContent = b ? 'Save changes' : 'Add block';
+    el.blockDeleteBtn.hidden = !b;
+    el.blockTitle.value = b ? b.title : (d.title || '');
+    const start = b ? b.start : (d.start || suggestedStart());
+    el.blockStart.value = start;
+    el.blockEnd.value = b ? b.end : (d.end || minToHm(Math.min(hmToMin(start) + 60, 23 * 60 + 59)));
+    el.blockRepeat.checked = b ? !b.date : !d.date;
+    renderDayChips(b ? b.days : (d.days || [weekdayOf(ui.scheduleDate)]));
+    el.blockDate.value = b && b.date ? b.date : (d.date || ui.scheduleDate);
+    updateRepeatUI();
+    fillTaskSelect(b ? b.taskId : (d.taskId || null));
+    renderSwatches(el.blockColors, b ? b.color : CATEGORY_COLORS[(data.blocks.length + 2) % CATEGORY_COLORS.length]);
+    el.blockNotes.value = b ? b.notes : '';
+    el.blockNotify.checked = b ? b.notify : true;
+    el.blockDialog.showModal();
+    el.blockTitle.focus();
+  }
+
+  function renderDayChips(selectedDays) {
+    const order = [1, 2, 3, 4, 5, 6, 0]; // Monday first
+    el.blockDaysWrap.innerHTML = order.map(d => `
+      <label class="day-chip"><input type="checkbox" name="days" value="${d}" ${selectedDays.includes(d) ? 'checked' : ''}><span>${WEEKDAY_SHORT[d]}</span></label>`).join('');
+  }
+
+  function updateRepeatUI() {
+    const repeats = el.blockRepeat.checked;
+    el.blockDaysWrap.hidden = !repeats;
+    el.blockDateWrap.hidden = repeats;
+  }
+
+  function fillTaskSelect(selectedId) {
+    const tasks = data.tasks.filter(t => !t.completed || t.id === selectedId).sort(compareTasks);
+    el.blockTask.innerHTML = ['<option value="">No task</option>'].concat(tasks.map(t => {
+      const c = getCategory(t.categoryId);
+      const label = (t.completed ? '✓ ' : '') + truncate(t.title, 60) + (c ? ` (${c.name})` : '');
+      return `<option value="${t.id}" ${t.id === selectedId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    })).join('');
+  }
+
+  function onBlockFormSubmit(e) {
+    e.preventDefault();
+    const title = el.blockTitle.value.trim();
+    if (!title) { el.blockTitle.value = ''; el.blockTitle.reportValidity(); return; }
+    if (!isHm(el.blockStart.value)) { el.blockStart.reportValidity(); return; }
+    if (!isHm(el.blockEnd.value)) { el.blockEnd.reportValidity(); return; }
+    if (hmToMin(el.blockEnd.value) <= hmToMin(el.blockStart.value)) {
+      toast('The end time must be after the start time.', { type: 'error' });
+      el.blockEnd.focus();
+      return;
+    }
+    const repeats = el.blockRepeat.checked;
+    const days = repeats ? Array.from(el.blockDaysWrap.querySelectorAll('input:checked')).map(i => +i.value) : ALL_DAYS;
+    if (repeats && !days.length) { toast('Pick at least one weekday, or switch off “Repeats every week”.', { type: 'error' }); return; }
+    const date = repeats ? null : el.blockDate.value;
+    if (!repeats && !isDateStr(date)) { el.blockDate.reportValidity(); return; }
+
+    const choice = getRadio(el.blockForm, 'color');
+    const custom = el.blockColors.querySelector('input[type="color"]');
+    const fields = {
+      title,
+      start: el.blockStart.value,
+      end: el.blockEnd.value,
+      days,
+      date,
+      taskId: el.blockTask.value || null,
+      color: choice === 'custom' && custom ? custom.value : choice,
+      notes: el.blockNotes.value.trim(),
+      notify: el.blockNotify.checked,
+    };
+    const candidate = normalizeBlock(fields, data.blocks.length, taskIdSet());
+    const clash = candidate && data.blocks.find(x => x.id !== ui.editingBlockId && blocksConflict(candidate, x));
+    if (clash) {
+      const when = clash.date ? formatShortDate(clash.date) : fmtDays(clash.days);
+      toast(`Overlaps with “${truncate(clash.title)}” (${fmtRange(clash)}, ${when}).`, { type: 'error', duration: 6000 });
+      return;
+    }
+
+    const editingId = ui.editingBlockId;
+    el.blockDialog.close();
+    let saved;
+    if (editingId) { updateBlock(editingId, fields); saved = getBlock(editingId); }
+    else saved = addBlock(fields);
+    if (saved) { revealBlock(saved); renderSchedule(); }
+  }
+
+  // ---------- Schedule: rendering ----------
+
+  function renderSchedule() {
+    const sel = ui.scheduleDate;
+    const isToday = sel === ui.today;
+    const now = nowMinutes();
+    const blocks = blocksForDate(sel);
+    const lead = data.settings.remindMinutes;
+    const selLabel = parseDateStr(sel).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+
+    const list = blocks.length
+      ? `<ul class="block-list">${blocks.map(b => blockRowHtml(b, isToday ? now : null)).join('')}</ul>`
+      : `<div class="empty">
+           <h3>Nothing planned for ${isToday ? 'today' : WEEKDAY_LONG[weekdayOf(sel)]}</h3>
+           <p>Add a time block to plan this day — for example “Homework” from 15:00 to 20:00.</p>
+           <button type="button" class="btn btn-ghost" data-block-action="add">Add a block</button>
+         </div>`;
+
+    el.schedulePanel.innerHTML = `
+      <div class="schedule-head">
+        <div>
+          <h2 class="view-title">Schedule</h2>
+          <p class="hint">Plan your day in time blocks. Reminders fire ${lead ? lead + ' min before' : 'at'} each switch while this page is open.</p>
+        </div>
+        <button type="button" class="btn btn-primary" data-block-action="add">${icon('plus', 16)}<span>Add block</span></button>
+      </div>
+      ${nowCardHtml(now)}
+      <div class="week-nav">
+        <button type="button" class="icon-btn" data-week="-1" aria-label="Previous week">${icon('chevron-left', 18)}</button>
+        <div class="day-tabs" role="tablist">${dayTabsHtml(sel)}</div>
+        <button type="button" class="icon-btn" data-week="1" aria-label="Next week">${icon('chevron-right', 18)}</button>
+        <button type="button" class="btn btn-ghost" data-week="today" ${isToday ? 'hidden' : ''}>Today</button>
+      </div>
+      <h3 class="day-title">${escapeHtml(selLabel)}${isToday ? ' <span class="muted">· today</span>' : ''}</h3>
+      ${timelineHtml(blocks, isToday ? now : null)}
+      ${list}
+      <p class="hint schedule-foot">Blocks repeat weekly on the days you choose, or happen once on a date. Linking a task to a block does not complete it — tick it off in Tasks when it is really done.</p>`;
+  }
+
+  function dayTabsHtml(sel) {
+    const monday = startOfWeek(sel);
+    return ALL_DAYS.map(i => {
+      const d = addDays(monday, i);
+      const date = parseDateStr(d);
+      const dots = blocksForDate(d).slice(0, 4).map(b => `<span class="day-dot" style="--cat:${b.color}"></span>`).join('');
+      const cls = ['day-tab', d === sel ? 'active' : '', d === ui.today ? 'today' : ''].join(' ');
+      return `<button type="button" class="${cls}" role="tab" aria-selected="${d === sel}" data-date="${d}" title="${escapeHtml(date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}">
+        <span class="day-name">${WEEKDAY_SHORT[weekdayOf(d)]}</span><span class="day-num">${date.getDate()}</span><span class="day-dots">${dots}</span>
+      </button>`;
+    }).join('');
+  }
+
+  function timelineHtml(blocks, now) {
+    const segs = blocks.map(b => {
+      const s = hmToMin(b.start), e = hmToMin(b.end);
+      const past = now != null && e <= now;
+      return `<button type="button" class="seg ${past ? 'past' : ''}" style="left:${(s / 1440 * 100).toFixed(3)}%;width:${((e - s) / 1440 * 100).toFixed(3)}%;--cat:${b.color}" data-block-action="edit" data-id="${b.id}" title="${escapeHtml(b.title)} · ${escapeHtml(fmtRange(b))}"><span>${escapeHtml(b.title)}</span></button>`;
+    }).join('');
+    const marker = now != null ? `<span class="now-marker" style="left:${(now / 1440 * 100).toFixed(3)}%" title="Now"></span>` : '';
+    const ticks = [0, 3, 6, 9, 12, 15, 18, 21].map(h => `<span class="tick" style="left:${(h / 24 * 100).toFixed(3)}%">${escapeHtml(fmtHour(h))}</span>`).join('');
+    return `<div class="timeline"><div class="timeline-bar">${segs}${marker}</div><div class="timeline-ticks">${ticks}</div></div>`;
+  }
+
+  function linkedTaskHtml(b) {
+    const t = b.taskId ? getTask(b.taskId) : null;
+    if (!t) return '';
+    return `<span class="block-task ${t.completed ? 'done' : ''}">${icon('check-circle', 13)}<button type="button" class="link-btn" data-task-open="${t.id}" title="Open task">${escapeHtml(truncate(t.title, 60))}</button></span>`;
+  }
+
+  function blockRowHtml(b, now) {
+    const s = hmToMin(b.start), e = hmToMin(b.end);
+    const state = now == null ? '' : (e <= now ? 'past' : (s <= now ? 'current' : ''));
+    const meta = [
+      `<span>${fmtDuration(e - s)}</span>`,
+      `<span>${icon(b.date ? 'calendar' : 'repeat', 13)}${escapeHtml(b.date ? formatShortDate(b.date) + ' only' : fmtDays(b.days))}</span>`,
+      linkedTaskHtml(b),
+      b.notify ? '' : `<span title="No reminders for this block">${icon('bell-off', 13)}muted</span>`,
+      b.notes ? `<span class="notes-preview">${escapeHtml(b.notes)}</span>` : '',
+    ].filter(Boolean).join('');
+    return `
+      <li class="block ${state}" data-id="${b.id}" style="--cat:${b.color}">
+        <div class="block-time"><strong>${escapeHtml(fmtTime(s))}</strong><span>${escapeHtml(fmtTime(e))}</span></div>
+        <div class="block-body" data-block-action="edit">
+          <button type="button" class="block-title" data-block-action="edit">${escapeHtml(b.title)}</button>
+          ${state === 'current' ? `<span class="now-pill">Now · ends in ${fmtDuration(e - now)}</span>` : ''}
+          <div class="block-meta">${meta}</div>
+        </div>
+        <div class="task-actions">
+          <button type="button" class="icon-btn sm" data-block-action="edit" title="Edit" aria-label="Edit block">${icon('edit', 15)}</button>
+          <button type="button" class="icon-btn sm danger" data-block-action="delete" title="Delete" aria-label="Delete block">${icon('trash', 15)}</button>
+        </div>
+      </li>`;
+  }
+
+  function nowCardHtml(now) {
+    const info = currentBlockInfo(now);
+    const b = info.current;
+    if (b) {
+      const s = hmToMin(b.start), e = hmToMin(b.end);
+      const t = b.taskId ? getTask(b.taskId) : null;
+      const progress = Math.min(100, Math.max(0, (now - s) / (e - s) * 100));
+      const next = info.next;
+      return `
+        <section class="now-card" style="--cat:${b.color}" aria-label="Current block">
+          <span class="now-label">Now</span>
+          <div class="now-main">
+            <h3>${escapeHtml(b.title)}</h3>
+            <div class="now-time">${escapeHtml(fmtRange(b))} · ends in ${fmtDuration(e - now)}</div>
+            ${t ? `<div class="now-task">Work on: ${linkedTaskHtml(b)}${t.completed ? '<span>(done)</span>' : `<button type="button" class="chip-btn" data-task-done="${t.id}">Mark done</button>`}</div>` : ''}
+            <div class="progress" role="progressbar" aria-valuenow="${Math.round(progress)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${progress.toFixed(1)}%"></span></div>
+          </div>
+          <div class="now-next">${next
+            ? `Up next: <strong>${escapeHtml(next.title)}</strong><br>${escapeHtml(fmtTime(hmToMin(next.start)))} · in ${fmtDuration(hmToMin(next.start) - now)}`
+            : 'Nothing scheduled after this'}</div>
+        </section>`;
+    }
+    if (info.next) {
+      const n = info.next;
+      return `
+        <section class="now-card idle" style="--cat:${n.color}" aria-label="Next block">
+          <span class="now-label">Up next</span>
+          <div class="now-main">
+            <h3>${escapeHtml(n.title)}</h3>
+            <div class="now-time">${escapeHtml(fmtRange(n))} · starts in ${fmtDuration(hmToMin(n.start) - now)}</div>
+            ${n.taskId && getTask(n.taskId) ? `<div class="now-task">Work on: ${linkedTaskHtml(n)}</div>` : ''}
+          </div>
+          <div class="now-next">Free until then</div>
+        </section>`;
+    }
+    return `
+      <section class="now-card idle" aria-label="Current block">
+        <span class="now-label">Now</span>
+        <div class="now-main">
+          <h3>Nothing scheduled right now</h3>
+          <div class="now-time">${info.blocks.length ? 'All of today’s blocks are done.' : 'Add a block to plan your day.'}</div>
+        </div>
+        <div class="now-next"></div>
+      </section>`;
+  }
+
+  function onSchedulePanelClick(e) {
+    const openTask = e.target.closest('[data-task-open]');
+    if (openTask) { openTaskDialog(openTask.dataset.taskOpen); return; }
+    const doneTask = e.target.closest('[data-task-done]');
+    if (doneTask) { toggleComplete(doneTask.dataset.taskDone); return; }
+
+    const actionEl = e.target.closest('[data-block-action]');
+    if (actionEl) {
+      const holder = actionEl.closest('[data-id]');
+      const id = holder ? holder.dataset.id : null;
+      switch (actionEl.dataset.blockAction) {
+        case 'add':    openBlockDialog(); break;
+        case 'edit':   if (id) openBlockDialog(id); break;
+        case 'delete': if (id) deleteBlock(id); break;
+      }
+      return;
+    }
+    const dayBtn = e.target.closest('[data-date]');
+    if (dayBtn) { ui.scheduleDate = dayBtn.dataset.date; renderSchedule(); return; }
+    const weekBtn = e.target.closest('[data-week]');
+    if (weekBtn) {
+      const w = weekBtn.dataset.week;
+      ui.scheduleDate = w === 'today' ? ui.today : addDays(ui.scheduleDate, 7 * (+w));
+      renderSchedule();
+    }
+  }
+
+  // ---------- Reminders ----------
+  // The page polls every 20 s. When a block start/end (minus the lead time) is reached, it shows a system
+  // notification (if allowed), an in-page toast and an optional sound — once per moment per day.
+
+  function loadFired() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(FIRED_KEY) || '{}');
+      const prefix = todayStr() + '|';
+      const out = {};
+      if (raw && typeof raw === 'object') Object.keys(raw).forEach(k => { if (k.indexOf(prefix) === 0) out[k] = raw[k]; });
+      return out;
+    } catch (e) { return {}; }
+  }
+  function saveFired() {
+    try { localStorage.setItem(FIRED_KEY, JSON.stringify(ui.fired)); } catch (e) { /* best effort */ }
+  }
+
+  function notificationState() {
+    if (!('Notification' in window)) return 'unsupported';
+    return Notification.permission; // 'default' | 'granted' | 'denied'
+  }
+
+  function requestNotificationPermission(onDone) {
+    if (notificationState() === 'unsupported') { toast('This browser cannot show system notifications.', { type: 'error' }); return; }
+    let handled = false;
+    const done = () => {
+      if (handled) return;
+      handled = true;
+      renderReminderSettings();
+      const state = notificationState();
+      if (state === 'granted') toast('System notifications are on.');
+      else if (state === 'denied') toast('Notifications are blocked for this site — in-page alerts will still work.', { type: 'error', duration: 6000 });
+      if (typeof onDone === 'function') onDone();
+    };
+    try {
+      const p = Notification.requestPermission(done); // old Safari only supports the callback form
+      if (p && typeof p.then === 'function') p.then(done);
+    } catch (e) { done(); }
+  }
+
+  function showNotification(title, body, tag) {
+    if (notificationState() !== 'granted') return;
+    try {
+      const n = new Notification(title, { body, tag });
+      n.onclick = () => { try { window.focus(); } catch (e) { /* ignore */ } n.close(); };
+    } catch (e) { /* e.g. Chrome on Android needs a service worker; the in-page toast still shows */ }
+  }
+
+  let audioCtx = null;
+  function beep() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      if (!audioCtx) audioCtx = new Ctx();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const t0 = audioCtx.currentTime;
+      [0, 0.22].forEach(offset => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, t0 + offset);
+        gain.gain.exponentialRampToValueAtTime(0.2, t0 + offset + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + offset + 0.18);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(t0 + offset);
+        osc.stop(t0 + offset + 0.2);
+      });
+    } catch (e) { /* audio is best effort */ }
+  }
+
+  function reminderText(ev, lead) {
+    const b = ev.block;
+    const t = b.taskId ? getTask(b.taskId) : null;
+    const when = lead ? `in ${lead} min` : 'now';
+    if (ev.kind === 'switch') {
+      const nt = ev.next.taskId ? getTask(ev.next.taskId) : null;
+      return {
+        title: `${lead ? `In ${lead} min` : 'Now'}: ${b.title} → ${ev.next.title}`,
+        body: `${ev.next.title} runs ${fmtRange(ev.next)}` + (nt ? ` · work on: ${nt.title}` : ''),
+      };
+    }
+    if (ev.kind === 'start') {
+      return { title: `Starting ${when}: ${b.title}`, body: fmtRange(b) + (t ? ` · work on: ${t.title}` : '') };
+    }
+    return {
+      title: `Ending ${when}: ${b.title}`,
+      body: ev.next ? `Up next: ${ev.next.title} at ${fmtTime(hmToMin(ev.next.start))}` : 'Nothing else scheduled today.',
+    };
+  }
+
+  function deliverReminder(ev, lead, key) {
+    const msg = reminderText(ev, lead);
+    showNotification(msg.title, msg.body, key);
+    toast(`${msg.title} — ${msg.body}`, { duration: 15000, action: 'Schedule', onAction: () => setMode('schedule') });
+    if (data.settings.reminderSound) beep();
+  }
+
+  function checkReminders() {
+    if (todayStr() !== ui.today) render();
+    const lead = data.settings.remindMinutes;
+    const now = nowMinutes();
+    for (const ev of scheduleEvents(ui.today)) {
+      if (!ev.block.notify) continue;
+      const fireAt = ev.at - lead;
+      if (now < fireAt || now >= fireAt + REMIND_TOLERANCE_MIN) continue;
+      const key = `${ui.today}|${ev.block.id}|${ev.kind}|${ev.at}`;
+      if (ui.fired[key]) continue;
+      ui.fired[key] = Date.now();
+      saveFired();
+      deliverReminder(ev, lead, key);
+    }
+  }
+
+  function sendTestReminder() {
+    const fire = () => {
+      showNotification('Reminders are working', 'This is what a schedule reminder looks like.', 'test-' + Date.now());
+      const system = notificationState() === 'granted';
+      toast('Test reminder sent' + (system ? '' : ' — in-page only, system notifications are off'), { duration: 6000 });
+      if (data.settings.reminderSound) beep();
+    };
+    if (notificationState() === 'default') requestNotificationPermission(fire);
+    else fire();
+  }
+
+  function renderReminderSettings() {
+    const state = notificationState();
+    const texts = {
+      unsupported: ['warn', 'This browser cannot show system notifications. You still get in-page alerts (and a sound) while the page is open.'],
+      default:     ['', 'System notifications are off. Enable them to be alerted even when this tab is in the background.'],
+      granted:     ['ok', 'System notifications are on.'],
+      denied:      ['warn', 'Notifications are blocked for this site. Allow them in the browser’s site settings for system alerts; in-page alerts still work.'],
+    };
+    const t = texts[state] || texts.default;
+    el.remindStatus.className = 'remind-status ' + t[0];
+    el.remindStatus.innerHTML = `${icon(state === 'granted' ? 'bell' : 'bell-off', 14)}<span>${t[1]}</span>`;
+    el.remindEnableBtn.hidden = state !== 'default';
+    el.remindLead.value = String(data.settings.remindMinutes);
+    el.remindSound.checked = data.settings.reminderSound;
   }
 
   // ---------- Toasts ----------
@@ -1054,6 +1690,7 @@
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         if (el.taskDialog.open) { e.preventDefault(); submitForm(el.taskForm); }
         else if (el.categoryDialog.open) { e.preventDefault(); submitForm(el.categoryForm); }
+        else if (el.blockDialog.open) { e.preventDefault(); submitForm(el.blockForm); }
       }
       return; // Escape closes dialogs natively
     }
@@ -1071,9 +1708,11 @@
     if (typing) return;
 
     switch (e.key) {
-      case 'n': case 'N': e.preventDefault(); openTaskDialog(); break;
-      case 'a': case 'A': e.preventDefault(); el.quickAddInput.focus(); break;
-      case '/':           e.preventDefault(); el.searchInput.focus(); el.searchInput.select(); break;
+      case 'n': case 'N': e.preventDefault(); if (data.settings.mode === 'schedule') openBlockDialog(); else openTaskDialog(); break;
+      case 'a': case 'A': e.preventDefault(); setMode('tasks'); el.quickAddInput.focus(); break;
+      case '/':           e.preventDefault(); setMode('tasks'); el.searchInput.focus(); el.searchInput.select(); break;
+      case 't': case 'T': e.preventDefault(); setMode('tasks'); break;
+      case 's': case 'S': e.preventDefault(); setMode('schedule'); break;
       case '?':           e.preventDefault(); el.helpDialog.showModal(); break;
     }
   }
@@ -1085,7 +1724,11 @@
   function bindEvents() {
     // Top bar
     el.brand.addEventListener('click', e => { e.preventDefault(); setView('all'); });
-    el.newTaskBtn.addEventListener('click', () => openTaskDialog());
+    el.newTaskBtn.addEventListener('click', () => (data.settings.mode === 'schedule' ? openBlockDialog() : openTaskDialog()));
+    el.modeSwitch.addEventListener('click', e => {
+      const b = e.target.closest('[data-mode]');
+      if (b) setMode(b.dataset.mode);
+    });
     el.themeToggle.addEventListener('click', toggleTheme);
     el.overdueBadge.addEventListener('click', () => setView('overdue'));
     el.searchInput.addEventListener('input', () => { ui.search = el.searchInput.value; renderList(); });
@@ -1143,17 +1786,44 @@
 
     // Category dialog
     el.categoryForm.addEventListener('submit', onCategoryFormSubmit);
-    el.categoryColors.addEventListener('input', e => {
+    [el.categoryColors, el.blockColors].forEach(container => container.addEventListener('input', e => {
       if (e.target.type !== 'color') return;
       const label = e.target.closest('.swatch');
       label.style.setProperty('--cat', e.target.value);
       label.querySelector('input[type="radio"]').checked = true;
-    });
+    }));
     el.categoryDeleteBtn.addEventListener('click', () => {
       const id = ui.editingCategoryId;
       el.categoryDialog.close();
       if (id) deleteCategory(id);
     });
+
+    // Schedule panel, block editor, reminders
+    el.schedulePanel.addEventListener('click', onSchedulePanelClick);
+    el.blockForm.addEventListener('submit', onBlockFormSubmit);
+    el.blockRepeat.addEventListener('change', updateRepeatUI);
+    el.blockStart.addEventListener('change', () => {
+      // Keep the end after the start: default to a one-hour block.
+      const start = isHm(el.blockStart.value) ? hmToMin(el.blockStart.value) : null;
+      const end = isHm(el.blockEnd.value) ? hmToMin(el.blockEnd.value) : null;
+      if (start != null && (end == null || end <= start)) el.blockEnd.value = minToHm(Math.min(start + 60, 23 * 60 + 59));
+    });
+    el.blockDeleteBtn.addEventListener('click', () => {
+      const id = ui.editingBlockId;
+      el.blockDialog.close();
+      if (id) deleteBlock(id);
+    });
+    el.taskScheduleBtn.addEventListener('click', () => {
+      const t = getTask(ui.editingTaskId);
+      el.taskDialog.close();
+      if (!t) return;
+      setMode('schedule');
+      openBlockDialog(null, { taskId: t.id, title: t.title });
+    });
+    el.remindEnableBtn.addEventListener('click', () => requestNotificationPermission());
+    el.remindLead.addEventListener('change', () => updateSettings({ remindMinutes: +el.remindLead.value }));
+    el.remindSound.addEventListener('change', () => updateSettings({ reminderSound: el.remindSound.checked }));
+    el.remindTestBtn.addEventListener('click', sendTestReminder);
 
     // Import / confirm dialogs
     el.importForm.addEventListener('submit', e => { e.preventDefault(); applyImport(getRadio(el.importForm, 'importMode') || 'merge'); });
@@ -1187,7 +1857,17 @@
 
     // Keep "today" (and therefore the overdue counter) correct across midnight
     setInterval(() => { if (todayStr() !== ui.today) render(); }, 60 * 1000);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden && todayStr() !== ui.today) render(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      if (todayStr() !== ui.today) render();
+      checkReminders();
+    });
+
+    // Schedule reminders, and keep the "Now" card live (unless the user is interacting with the panel)
+    setInterval(checkReminders, 20 * 1000);
+    setInterval(() => {
+      if (data.settings.mode === 'schedule' && !el.schedulePanel.contains(document.activeElement)) renderSchedule();
+    }, 30 * 1000);
 
     // Follow the OS theme while no explicit choice is saved
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -1196,6 +1876,7 @@
 
     // Stay in sync when another tab of this app changes the data
     window.addEventListener('storage', e => {
+      if (e.key === FIRED_KEY) { ui.fired = loadFired(); return; }
       if (e.key !== STORAGE_KEY) return;
       data = loadData();
       applyTheme();
@@ -1208,4 +1889,5 @@
   applyTheme();
   bindEvents();
   render();
+  checkReminders();
 })();

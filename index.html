@@ -38,6 +38,17 @@
         <span class="brand-text">Tasks</span>
       </a>
 
+      <div class="mode-switch" id="modeSwitch" role="tablist" aria-label="Section">
+        <button type="button" class="mode-btn active" data-mode="tasks" role="tab" aria-selected="true" title="Tasks (T)">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>
+          <span class="mode-label">Tasks</span>
+        </button>
+        <button type="button" class="mode-btn" data-mode="schedule" role="tab" aria-selected="false" title="Schedule (S)">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <span class="mode-label">Schedule</span>
+        </button>
+      </div>
+
       <div class="search" role="search">
         <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
         <input id="searchInput" type="search" placeholder="Search tasks" aria-label="Search tasks" autocomplete="off" spellcheck="false">
@@ -58,9 +69,9 @@
 
     <!-- ===== Sidebar ===== -->
     <aside class="sidebar" id="sidebar">
-      <nav class="views" id="viewsNav" aria-label="Views"></nav>
+      <nav class="views tasks-only" id="viewsNav" aria-label="Views"></nav>
 
-      <section class="side-section" aria-labelledby="categoriesHeading">
+      <section class="side-section tasks-only" aria-labelledby="categoriesHeading">
         <div class="side-head">
           <h2 id="categoriesHeading">Categories</h2>
           <div class="side-head-actions">
@@ -71,6 +82,34 @@
         </div>
         <ul class="category-list" id="categoryList"></ul>
         <button class="btn btn-ghost btn-block" id="addCategoryBtn" type="button">+ Add category</button>
+      </section>
+
+      <section class="side-section schedule-only" aria-labelledby="remindHeading">
+        <div class="side-head">
+          <h2 id="remindHeading">Reminders</h2>
+        </div>
+        <p class="remind-status" id="remindStatus"></p>
+        <div class="remind-controls">
+          <button class="btn btn-primary btn-block" id="remindEnableBtn" type="button" hidden>Enable notifications</button>
+          <label class="control">
+            <span>Remind</span>
+            <select id="remindLead">
+              <option value="0">at the switch</option>
+              <option value="5">5 min before</option>
+              <option value="10">10 min before</option>
+              <option value="15">15 min before</option>
+              <option value="30">30 min before</option>
+              <option value="60">1 hour before</option>
+            </select>
+          </label>
+          <label class="switch control">
+            <input type="checkbox" id="remindSound">
+            <span class="switch-track"></span>
+            <span>Play a sound</span>
+          </label>
+          <button class="btn btn-ghost btn-block" id="remindTestBtn" type="button">Send a test reminder</button>
+        </div>
+        <p class="hint">Reminders only fire while this page is open in a browser tab.</p>
       </section>
 
       <section class="side-section" aria-labelledby="dataHeading">
@@ -90,6 +129,7 @@
 
     <!-- ===== Main content ===== -->
     <main class="content" id="content">
+      <div id="tasksPanel">
       <div class="stats" id="stats" aria-label="Summary"></div>
 
       <div class="toolbar">
@@ -130,6 +170,9 @@
 
       <ul class="task-list" id="taskList"></ul>
       <div class="empty" id="emptyState" hidden></div>
+      </div>
+
+      <section class="schedule" id="schedulePanel" aria-label="Schedule" hidden></section>
     </main>
   </div>
 
@@ -178,6 +221,7 @@
 
       <div class="dialog-actions">
         <button type="button" class="btn btn-danger-text" id="taskDeleteBtn" hidden>Delete</button>
+        <button type="button" class="btn btn-ghost" id="taskScheduleBtn" hidden title="Plan a time block for this task">Schedule time</button>
         <span class="spacer"></span>
         <button type="button" class="btn btn-ghost" data-close>Cancel</button>
         <button type="submit" class="btn btn-primary" id="taskSaveBtn">Add task</button>
@@ -205,6 +249,71 @@
         <span class="spacer"></span>
         <button type="button" class="btn btn-ghost" data-close>Cancel</button>
         <button type="submit" class="btn btn-primary" id="categorySaveBtn">Add category</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ===== Time block editor ===== -->
+  <dialog id="blockDialog" class="dialog" aria-labelledby="blockDialogTitle">
+    <form id="blockForm" class="dialog-form">
+      <h2 id="blockDialogTitle">New time block</h2>
+
+      <label class="field">
+        <span>Title</span>
+        <input id="blockTitle" type="text" required maxlength="80" autocomplete="off" placeholder="e.g. Homework">
+      </label>
+
+      <div class="field-row">
+        <label class="field">
+          <span>Starts</span>
+          <input id="blockStart" type="time" required>
+        </label>
+        <label class="field">
+          <span>Ends</span>
+          <input id="blockEnd" type="time" required>
+        </label>
+      </div>
+
+      <fieldset class="field">
+        <legend>When</legend>
+        <label class="switch">
+          <input type="checkbox" id="blockRepeat" checked>
+          <span class="switch-track"></span>
+          <span>Repeats every week</span>
+        </label>
+        <div class="day-chips" id="blockDaysWrap" role="group" aria-label="Weekdays"></div>
+        <div id="blockDateWrap" hidden>
+          <input id="blockDate" type="date" aria-label="Date">
+        </div>
+      </fieldset>
+
+      <label class="field">
+        <span>Work on a task <em class="optional">optional</em></span>
+        <select id="blockTask"></select>
+        <small class="hint">Linking a task does not complete it — it is just what you plan to work on.</small>
+      </label>
+
+      <fieldset class="field">
+        <legend>Color</legend>
+        <div class="swatches" id="blockColors"></div>
+      </fieldset>
+
+      <label class="field">
+        <span>Notes <em class="optional">optional</em></span>
+        <textarea id="blockNotes" rows="2" maxlength="500" placeholder="Anything to remember for this block"></textarea>
+      </label>
+
+      <label class="switch">
+        <input type="checkbox" id="blockNotify" checked>
+        <span class="switch-track"></span>
+        <span>Remind me before this block starts and ends</span>
+      </label>
+
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-danger-text" id="blockDeleteBtn" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="blockSaveBtn">Add block</button>
       </div>
     </form>
   </dialog>
@@ -260,6 +369,7 @@
         <dt><kbd>/</kbd></dt><dd>Search</dd>
         <dt><kbd>Esc</kbd></dt><dd>Clear search / close</dd>
         <dt><kbd>Ctrl</kbd> + <kbd>Enter</kbd></dt><dd>Save the task you're editing</dd>
+        <dt><kbd>T</kbd> / <kbd>S</kbd></dt><dd>Switch between Tasks and Schedule</dd>
         <dt><kbd>?</kbd></dt><dd>This help</dd>
       </dl>
 
@@ -275,6 +385,9 @@
 
       <h3 class="dialog-subhead">Tasks</h3>
       <p class="dialog-text">Click a task's flag to cycle its priority. Click the title to edit. Deleting can be undone from the toast for a few seconds.</p>
+
+      <h3 class="dialog-subhead">Schedule</h3>
+      <p class="dialog-text">Time blocks repeat weekly on the days you pick, or happen once on a date. Link a task to a block to plan when you will work on it — the task is only completed when you tick it off. Reminders fire before a block starts or ends, but only while this page is open.</p>
 
       <div class="dialog-actions">
         <span class="spacer"></span>
