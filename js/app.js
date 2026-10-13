@@ -163,6 +163,13 @@
     return new Date(2000, 0, 1, Math.floor(min / 60), Math.floor(min % 60)).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
   function fmtHour(h) { return new Date(2000, 0, 1, h).toLocaleTimeString(undefined, { hour: 'numeric' }); }
+  /** "at the switch", "5 min before", "1 hour before" */
+  function fmtLead(min) {
+    if (!min) return 'at the switch';
+    if (min % 60 === 0) return (min === 60 ? '1 hour' : (min / 60) + ' hours') + ' before';
+    return min + ' min before';
+  }
+
   function fmtDuration(min) {
     const m = Math.max(0, Math.round(min));
     const h = Math.floor(m / 60), r = m % 60;
@@ -275,6 +282,7 @@
       : ALL_DAYS.slice();
     if (!days.length) days = ALL_DAYS.slice();
     const created = isoOr(b.createdAt, nowIso());
+    const rm = b.remindMinutes == null || b.remindMinutes === '' ? NaN : Number(b.remindMinutes);
     return {
       id: normalizeId(b.id, 'b'),
       title,
@@ -286,7 +294,8 @@
       taskId: typeof b.taskId === 'string' && taskIds.has(b.taskId) ? b.taskId : null,
       categoryId: typeof b.categoryId === 'string' && catIds.has(b.categoryId) ? b.categoryId : null,
       notes: String(b.notes == null ? '' : b.notes).slice(0, 500),
-      notify: b.notify !== false,
+      notify: b.notify !== false,                                       // false = muted, no reminders at all
+      remindMinutes: Number.isInteger(rm) && rm >= 0 && rm <= 1440 ? rm : null, // own lead time; null = use the default
       createdAt: created,
       updatedAt: isoOr(b.updatedAt, created),
     };
@@ -451,15 +460,32 @@
       .sort((a, b) => hmToMin(a.start) - hmToMin(b.start) || hmToMin(a.end) - hmToMin(b.end));
   }
 
-  /** Moments a reminder can fire for: each block's start, and its end — a "switch" when the next block begins right then. */
+  /** Minutes before its start/end that a block wants a reminder, or null when the block is muted. */
+  function reminderLead(b) {
+    if (!b.notify) return null;
+    return b.remindMinutes == null ? data.settings.remindMinutes : b.remindMinutes;
+  }
+
+  /**
+   * The moments of a day that trigger a reminder: a block starting, a block ending, or one block
+   * switching straight into the next. Each event carries the lead time of the block it is about —
+   * for a switch that is the incoming block — so every block can have its own setting. Muted blocks
+   * produce no events; a switch into a muted block falls back to the outgoing block's end reminder.
+   */
   function scheduleEvents(dateStr) {
     const blocks = blocksForDate(dateStr);
     const events = [];
     blocks.forEach((b, i) => {
       const prev = blocks[i - 1], next = blocks[i + 1];
-      if (!(prev && prev.end === b.start)) events.push({ kind: 'start', at: hmToMin(b.start), block: b, next: null });
-      if (next && next.start === b.end) events.push({ kind: 'switch', at: hmToMin(b.end), block: b, next });
-      else events.push({ kind: 'end', at: hmToMin(b.end), block: b, next: next || null });
+      const lead = reminderLead(b);
+      const joinsPrev = !!prev && prev.end === b.start;
+      const joinsNext = !!next && next.start === b.end;
+      if (lead != null && !joinsPrev) events.push({ kind: 'start', at: hmToMin(b.start), block: b, next: null, lead });
+      if (joinsNext && reminderLead(next) != null) {
+        events.push({ kind: 'switch', at: hmToMin(b.end), block: b, next, lead: reminderLead(next) });
+      } else if (lead != null) {
+        events.push({ kind: 'end', at: hmToMin(b.end), block: b, next: next || null, lead });
+      }
     });
     return events;
   }
@@ -1229,8 +1255,8 @@
       const sampleBlocks = [
         { title: 'Deep work', start: '09:00', end: '11:30', days: [1, 2, 3, 4, 5], color: '#3b82f6', categoryId: cat.Work, taskId: created[0] ? created[0].id : null },
         { title: 'Lunch & a walk', start: '12:30', end: '13:30', days: [1, 2, 3, 4, 5], color: '#22c55e', categoryId: cat.Health },
-        { title: 'Homework', start: '15:00', end: '20:00', days: [1, 2, 3, 4], color: '#8b5cf6', categoryId: cat.Study, taskId: maths ? maths.id : null, notes: 'Phone in the other room.' },
-        { title: 'Gym', start: '18:00', end: '19:00', days: [5], color: '#ec4899', categoryId: cat.Health },
+        { title: 'Homework', start: '15:00', end: '20:00', days: [1, 2, 3, 4], color: '#8b5cf6', categoryId: cat.Study, taskId: maths ? maths.id : null, notes: 'Phone in the other room.', remindMinutes: 15 },
+        { title: 'Gym', start: '18:00', end: '19:00', days: [5], color: '#ec4899', categoryId: cat.Health, remindMinutes: 30 },
       ];
       sampleBlocks.forEach((s, i) => {
         const b = normalizeBlock(s, i, taskIdSet(), categoryIdSet());
@@ -1321,7 +1347,7 @@
     fillCategorySelect(el.blockCategory, b ? b.categoryId : (d.categoryId || null));
     renderSwatches(el.blockColors, b ? b.color : (d.color || CATEGORY_COLORS[(data.blocks.length + 2) % CATEGORY_COLORS.length]));
     el.blockNotes.value = b ? b.notes : '';
-    el.blockNotify.checked = b ? b.notify : true;
+    fillRemindSelect(b);
     el.blockDialog.showModal();
     el.blockTitle.focus();
   }
@@ -1336,6 +1362,15 @@
     const repeats = el.blockRepeat.checked;
     el.blockDaysWrap.hidden = !repeats;
     el.blockDateWrap.hidden = repeats;
+  }
+
+  /** Options: follow the default, off, or one of the preset leads (plus the block's own value if it is not a preset). */
+  function fillRemindSelect(b) {
+    const value = !b ? '' : (!b.notify ? 'off' : (b.remindMinutes == null ? '' : String(b.remindMinutes)));
+    const opts = [['', `Default (${fmtLead(data.settings.remindMinutes)})`], ['off', 'Off — no reminders for this block']]
+      .concat(REMIND_OPTIONS.map(m => [String(m), fmtLead(m)]));
+    if (value !== '' && value !== 'off' && !REMIND_OPTIONS.includes(+value)) opts.push([value, fmtLead(+value)]);
+    el.blockRemind.innerHTML = opts.map(o => `<option value="${o[0]}" ${o[0] === value ? 'selected' : ''}>${escapeHtml(o[1])}</option>`).join('');
   }
 
   function fillTaskSelect(selectedId) {
@@ -1366,6 +1401,7 @@
 
     const choice = getRadio(el.blockForm, 'color');
     const custom = el.blockColors.querySelector('input[type="color"]');
+    const remind = el.blockRemind.value;
     const fields = {
       title,
       start: el.blockStart.value,
@@ -1376,7 +1412,8 @@
       categoryId: el.blockCategory.value || null,
       color: choice === 'custom' && custom ? custom.value : choice,
       notes: el.blockNotes.value.trim(),
-      notify: el.blockNotify.checked,
+      notify: remind !== 'off',
+      remindMinutes: remind === '' || remind === 'off' ? null : +remind,
     };
     const candidate = normalizeBlock(fields, data.blocks.length, taskIdSet(), categoryIdSet());
     const clash = candidate && data.blocks.find(x => x.id !== ui.editingBlockId && blocksConflict(candidate, x));
@@ -1402,6 +1439,7 @@
     const now = nowMinutes();
     const blocks = blocksForDate(sel);
     const lead = data.settings.remindMinutes;
+    const leadText = lead ? fmtLead(lead).replace(' before', ' before each switch') : 'at each switch';
     const selLabel = parseDateStr(sel).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
     const list = blocks.length
@@ -1416,7 +1454,7 @@
       <div class="schedule-head">
         <div>
           <h2 class="view-title">Schedule</h2>
-          <p class="hint">Plan your day in time blocks. Reminders fire ${lead ? lead + ' min before' : 'at'} each switch while this page is open.</p>
+          <p class="hint">Plan your day in time blocks. Reminders fire ${leadText} while this page is open; each block can set its own lead.</p>
         </div>
         <button type="button" class="btn btn-primary" data-block-action="add">${icon('plus', 16)}<span>Add block</span></button>
       </div>
@@ -1462,10 +1500,19 @@
     return c ? `<span class="cat-chip" style="--cat:${c.color}">${escapeHtml(c.name)}</span>` : '';
   }
 
+  /** The task a block is linked to, as a clickable chip that opens the task. */
   function linkedTaskHtml(b) {
     const t = b.taskId ? getTask(b.taskId) : null;
     if (!t) return '';
-    return `<span class="block-task ${t.completed ? 'done' : ''}">${icon('check-circle', 13)}<button type="button" class="link-btn" data-task-open="${t.id}" title="Open task">${escapeHtml(truncate(t.title, 60))}</button></span>`;
+    const title = t.completed ? 'Done — open task' : `${PRIORITIES[t.priority].label} priority — open task`;
+    return `<button type="button" class="task-link ${t.completed ? 'done' : ''}" style="--p:var(--p-${t.priority})" data-task-open="${t.id}" title="${escapeHtml(title)}">
+      <span class="task-link-icon">${icon(t.completed ? 'check-circle' : 'flag', 13)}</span><span class="task-link-text">${escapeHtml(truncate(t.title, 60))}</span></button>`;
+  }
+
+  function reminderTagHtml(b) {
+    if (!b.notify) return `<span title="No reminders for this block">${icon('bell-off', 13)}muted</span>`;
+    if (b.remindMinutes == null) return '';
+    return `<span title="This block’s own reminder (the default is ${escapeHtml(fmtLead(data.settings.remindMinutes))})">${icon('bell', 13)}${escapeHtml(fmtLead(b.remindMinutes))}</span>`;
   }
 
   function blockRowHtml(b, now) {
@@ -1476,7 +1523,7 @@
       `<span>${fmtDuration(e - s)}</span>`,
       `<span>${icon(b.date ? 'calendar' : 'repeat', 13)}${escapeHtml(b.date ? formatShortDate(b.date) + ' only' : fmtDays(b.days))}</span>`,
       linkedTaskHtml(b),
-      b.notify ? '' : `<span title="No reminders for this block">${icon('bell-off', 13)}muted</span>`,
+      reminderTagHtml(b),
       b.notes ? `<span class="notes-preview">${escapeHtml(b.notes)}</span>` : '',
     ].filter(Boolean).join('');
     return `
@@ -1508,7 +1555,7 @@
           <div class="now-main">
             <h3>${escapeHtml(b.title)}</h3>
             <div class="now-time">${blockCategoryChip(b)} ${escapeHtml(fmtRange(b))} · ends in ${fmtDuration(e - now)}</div>
-            ${t ? `<div class="now-task">Work on: ${linkedTaskHtml(b)}${t.completed ? '<span>(done)</span>' : `<button type="button" class="chip-btn" data-task-done="${t.id}">Mark done</button>`}</div>` : ''}
+            ${t ? `<div class="now-task"><span class="now-task-label">Work on</span>${linkedTaskHtml(b)}${t.completed ? '' : `<button type="button" class="chip-btn" data-task-done="${t.id}">Mark done</button>`}</div>` : ''}
             <div class="progress" role="progressbar" aria-valuenow="${Math.round(progress)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${progress.toFixed(1)}%"></span></div>
           </div>
           <div class="now-next">${next
@@ -1524,7 +1571,7 @@
           <div class="now-main">
             <h3>${escapeHtml(n.title)}</h3>
             <div class="now-time">${blockCategoryChip(n)} ${escapeHtml(fmtRange(n))} · starts in ${fmtDuration(hmToMin(n.start) - now)}</div>
-            ${n.taskId && getTask(n.taskId) ? `<div class="now-task">Work on: ${linkedTaskHtml(n)}</div>` : ''}
+            ${n.taskId && getTask(n.taskId) ? `<div class="now-task"><span class="now-task-label">Work on</span>${linkedTaskHtml(n)}</div>` : ''}
           </div>
           <div class="now-next">Free until then</div>
         </section>`;
@@ -1718,17 +1765,15 @@
 
   function checkReminders() {
     if (todayStr() !== ui.today) render();
-    const lead = data.settings.remindMinutes;
     const now = nowMinutes();
     for (const ev of scheduleEvents(ui.today)) {
-      if (!ev.block.notify) continue;
-      const fireAt = ev.at - lead;
+      const fireAt = ev.at - ev.lead;
       if (now < fireAt || now >= fireAt + REMIND_TOLERANCE_MIN) continue;
       const key = `${ui.today}|${ev.block.id}|${ev.kind}|${ev.at}`;
       if (ui.fired[key]) continue;
       ui.fired[key] = Date.now();
       saveFired();
-      deliverReminder(ev, lead, key);
+      deliverReminder(ev, ev.lead, key);
     }
   }
 

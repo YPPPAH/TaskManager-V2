@@ -64,10 +64,10 @@ There are no dependencies and nothing to install.
 - The list of blocks for that day — the current one is highlighted, past ones dimmed.
 
 **Reminders**
-- Fire *X minutes before* each switch: before a block starts, before it ends, or "A → B" when one block runs straight into the next. Choose 0 (at the switch), 5, 10, 15, 30 or 60 minutes in the sidebar.
+- Fire *X minutes before* each switch: before a block starts, before it ends, or "A → B" when one block runs straight into the next.
+- **Each block has its own lead time.** The *Reminder* field in the block editor offers *Default*, *Off*, *at the switch*, or 5, 10, 15, 30 or 60 minutes before. The sidebar's *By default* setting is what blocks on *Default* use, so you can set 10 minutes once and give a single block 5. When one block runs straight into the next, the incoming block's lead decides when the "A → B" reminder fires. Blocks with their own lead show a bell with it in the list; muted blocks show "muted".
 - Delivered as a **system notification** (after you allow them with *Enable notifications*), an **in-page toast**, and an optional **sound**. "Send a test reminder" checks everything is working.
 - With sound on, the alarm **rings until you stop it** — click *Stop* on the toast, click the notification, or press `Esc`. As a safety net it stops by itself after 10 minutes (`ALARM_MAX_MS` in `js/app.js`). Browsers only allow sound after you've interacted with the page once, so open the app and click anything before relying on it.
-- Each block has a "Remind me" switch so you can mute individual blocks.
 - **Reminders only fire while the page is open in a tab.** There's no server behind this app, so nothing can wake it when it's closed. Keep the tab open (it can be in the background) and the app polls every 20 seconds.
 - A reminder is delivered once per day per moment, even if you reload the page, and it is skipped (not fired late) if the moment is more than two minutes past — for example after the laptop wakes from sleep.
 
@@ -152,6 +152,7 @@ Exports look like this (the same shape is used in `localStorage` under the key `
       "categoryId": "c_abc123",
       "notes": "",
       "notify": true,
+      "remindMinutes": 15,
       "createdAt": "…",
       "updatedAt": "…"
     }
@@ -162,6 +163,7 @@ Exports look like this (the same shape is used in `localStorage` under the key `
 - `priority` is one of `low`, `normal`, `high`, `urgent`.
 - `dueDate` is a plain `YYYY-MM-DD` (no time zone surprises); `null` means no date.
 - Block `start`/`end` are `HH:MM` (24-hour, end after start, same day). `days` are weekdays with `0` = Sunday … `6` = Saturday; when `date` is set the block happens once on that day and `days` is ignored.
+- Block reminders: `notify: false` mutes the block; `remindMinutes` is the block's own lead in minutes (0–1440) and `null` means "use the default from settings".
 - Imports are validated and cleaned: unknown fields are dropped, bad values fall back to defaults, and references to missing categories or tasks are cleared. Hand-edited files are fine.
 
 ## Project layout

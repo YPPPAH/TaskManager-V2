@@ -94,7 +94,7 @@
         <div class="remind-controls">
           <button class="btn btn-primary btn-block" id="remindEnableBtn" type="button" hidden>Enable notifications</button>
           <label class="control">
-            <span>Remind</span>
+            <span>By default</span>
             <select id="remindLead">
               <option value="0">at the switch</option>
               <option value="5">5 min before</option>
@@ -111,7 +111,7 @@
           </label>
           <button class="btn btn-ghost btn-block" id="remindTestBtn" type="button">Send a test reminder</button>
         </div>
-        <p class="hint">Reminders only fire while this page is open in a browser tab.</p>
+        <p class="hint">Reminders only fire while this page is open in a browser tab. Each block can use its own lead time — set it in the block editor.</p>
       </section>
 
       <details class="side-section side-details" id="dataSection">
@@ -313,11 +313,11 @@
         <textarea id="blockNotes" rows="2" maxlength="500" placeholder="Anything to remember for this block"></textarea>
       </label>
 
-      <label class="switch">
-        <input type="checkbox" id="blockNotify" checked>
-        <span class="switch-track"></span>
-        <span>Remind me before this block starts and ends</span>
+      <label class="field">
+        <span>Reminder</span>
+        <select id="blockRemind"></select>
       </label>
+      <p class="hint field-hint">Rings that long before this block starts and before it ends (or before the switch into the next block). “Default” follows the Reminders setting in the sidebar.</p>
 
       <div class="dialog-actions">
         <button type="button" class="btn btn-danger-text" id="blockDeleteBtn" hidden>Delete</button>
@@ -397,7 +397,7 @@
       <p class="dialog-text">Click a task's flag to cycle its priority. Click the title to edit. Deleting can be undone from the toast for a few seconds.</p>
 
       <h3 class="dialog-subhead">Schedule</h3>
-      <p class="dialog-text">Time blocks repeat weekly on the days you pick, or happen once on a date. Link a task to a block to plan when you will work on it — the task is only completed when you tick it off. Reminders fire before a block starts or ends, but only while this page is open.</p>
+      <p class="dialog-text">Time blocks repeat weekly on the days you pick, or happen once on a date. Link a task to a block to plan when you will work on it — the task is only completed when you tick it off. Reminders fire before a block starts or ends — each block can have its own lead time or be muted — but only while this page is open.</p>
 
       <div class="dialog-actions">
         <span class="spacer"></span>
