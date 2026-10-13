@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="A small task manager that lives entirely in your browser.">
+  <title>Tasks</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6fed'/%3E%3Cpath d='M9 16.5l5 5 9-10' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+  <script>
+    // Apply the saved theme before first paint so dark-mode users don't see a white flash.
+    (function () {
+      try {
+        var saved = JSON.parse(localStorage.getItem('taskmanager-v2') || '{}');
+        var theme = saved && saved.settings ? saved.settings.theme : null;
+        if (theme !== 'light' && theme !== 'dark') {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) { /* ignore */ }
+    })();
+  </script>
+</head>
+<body>
+  <div class="app" id="app">
+
+    <!-- ===== Top bar ===== -->
+    <header class="topbar">
+      <button class="icon-btn" id="sidebarToggle" type="button" aria-label="Toggle menu" aria-controls="sidebar" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+
+      <a class="brand" id="brand" href="#" title="All tasks">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+        </span>
+        <span class="brand-text">Tasks</span>
+      </a>
+
+      <div class="search" role="search">
+        <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input id="searchInput" type="search" placeholder="Search tasks" aria-label="Search tasks" autocomplete="off" spellcheck="false">
+        <kbd class="search-kbd" aria-hidden="true">/</kbd>
+      </div>
+
+      <button class="overdue-badge" id="overdueBadge" type="button" hidden title="Show overdue tasks"></button>
+
+      <button class="icon-btn" id="themeToggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode"></button>
+
+      <button class="btn btn-primary" id="newTaskBtn" type="button" title="New task (N)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="btn-label">New task</span>
+      </button>
+    </header>
+
+    <div class="backdrop" id="backdrop" hidden></div>
+
+    <!-- ===== Sidebar ===== -->
+    <aside class="sidebar" id="sidebar">
+      <nav class="views" id="viewsNav" aria-label="Views"></nav>
+
+      <section class="side-section" aria-labelledby="categoriesHeading">
+        <div class="side-head">
+          <h2 id="categoriesHeading">Categories</h2>
+          <div class="side-head-actions">
+            <button class="link-btn" id="catAllBtn" type="button" title="Show every category">All</button>
+            <span class="sep" aria-hidden="true">·</span>
+            <button class="link-btn" id="catNoneBtn" type="button" title="Hide every category">None</button>
+          </div>
+        </div>
+        <ul class="category-list" id="categoryList"></ul>
+        <button class="btn btn-ghost btn-block" id="addCategoryBtn" type="button">+ Add category</button>
+      </section>
+
+      <section class="side-section" aria-labelledby="dataHeading">
+        <div class="side-head">
+          <h2 id="dataHeading">Data</h2>
+        </div>
+        <div class="data-actions">
+          <button class="btn btn-ghost btn-block" id="exportJsonBtn" type="button">Export JSON</button>
+          <button class="btn btn-ghost btn-block" id="exportCsvBtn" type="button">Export CSV</button>
+          <button class="btn btn-ghost btn-block" id="importBtn" type="button">Import JSON…</button>
+          <button class="btn btn-ghost btn-block btn-danger-text" id="clearDataBtn" type="button">Clear all data</button>
+        </div>
+        <p class="hint">Everything is stored in this browser only. Export now and then to keep a backup.</p>
+        <button class="link-btn" id="helpBtn" type="button">Shortcuts &amp; tips</button>
+      </section>
+    </aside>
+
+    <!-- ===== Main content ===== -->
+    <main class="content" id="content">
+      <div class="stats" id="stats" aria-label="Summary"></div>
+
+      <div class="toolbar">
+        <h2 class="view-title" id="viewTitle">All tasks</h2>
+        <div class="toolbar-controls">
+          <label class="control">
+            <span>Sort</span>
+            <select id="sortSelect">
+              <option value="due">Due date</option>
+              <option value="priority">Priority</option>
+              <option value="created">Newest first</option>
+              <option value="title">Title</option>
+            </select>
+          </label>
+          <label class="control">
+            <span>Priority</span>
+            <select id="priorityFilter">
+              <option value="all">Any</option>
+              <option value="urgent">Urgent</option>
+              <option value="high">High</option>
+              <option value="normal">Normal</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+          <label class="switch control" id="showCompletedWrap">
+            <input type="checkbox" id="showCompleted">
+            <span class="switch-track"></span>
+            <span>Show completed</span>
+          </label>
+        </div>
+      </div>
+
+      <form class="quick-add" id="quickAddForm" autocomplete="off">
+        <input id="quickAddInput" type="text" maxlength="300" placeholder="Add a task…  e.g. Pay rent #Home !high @tomorrow" aria-label="Quick add task">
+        <button class="btn btn-primary" type="submit">Add</button>
+      </form>
+      <p class="hint quick-hint">Tip: type <code>#Category</code>, <code>!low</code> / <code>!high</code> / <code>!urgent</code> and <code>@today</code>, <code>@tomorrow</code>, <code>@fri</code> or <code>@2026-12-31</code> to fill in details as you add.</p>
+
+      <ul class="task-list" id="taskList"></ul>
+      <div class="empty" id="emptyState" hidden></div>
+    </main>
+  </div>
+
+  <!-- ===== Task editor ===== -->
+  <dialog id="taskDialog" class="dialog" aria-labelledby="taskDialogTitle">
+    <form id="taskForm" class="dialog-form">
+      <h2 id="taskDialogTitle">New task</h2>
+
+      <label class="field">
+        <span>Title</span>
+        <input id="taskTitle" type="text" required maxlength="200" autocomplete="off" placeholder="What needs doing?">
+      </label>
+
+      <label class="field">
+        <span>Notes <em class="optional">optional</em></span>
+        <textarea id="taskNotes" rows="3" maxlength="2000" placeholder="Details, links, checklists…"></textarea>
+      </label>
+
+      <div class="field-row">
+        <label class="field">
+          <span>Category</span>
+          <select id="taskCategory"></select>
+        </label>
+        <label class="field">
+          <span>Due date</span>
+          <input id="taskDue" type="date">
+        </label>
+      </div>
+
+      <div class="chip-row" aria-label="Quick dates">
+        <button type="button" class="chip-btn" data-quick-date="0">Today</button>
+        <button type="button" class="chip-btn" data-quick-date="1">Tomorrow</button>
+        <button type="button" class="chip-btn" data-quick-date="7">In a week</button>
+        <button type="button" class="chip-btn" data-quick-date="clear">No date</button>
+      </div>
+
+      <fieldset class="field">
+        <legend>Priority</legend>
+        <div class="segmented" id="taskPriority">
+          <label data-p="low"><input type="radio" name="priority" value="low"><span>Low</span></label>
+          <label data-p="normal"><input type="radio" name="priority" value="normal" checked><span>Normal</span></label>
+          <label data-p="high"><input type="radio" name="priority" value="high"><span>High</span></label>
+          <label data-p="urgent"><input type="radio" name="priority" value="urgent"><span>Urgent</span></label>
+        </div>
+      </fieldset>
+
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-danger-text" id="taskDeleteBtn" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="taskSaveBtn">Add task</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ===== Category editor ===== -->
+  <dialog id="categoryDialog" class="dialog dialog-sm" aria-labelledby="categoryDialogTitle">
+    <form id="categoryForm" class="dialog-form">
+      <h2 id="categoryDialogTitle">New category</h2>
+
+      <label class="field">
+        <span>Name</span>
+        <input id="categoryName" type="text" required maxlength="40" autocomplete="off" placeholder="e.g. Work">
+      </label>
+
+      <fieldset class="field">
+        <legend>Color</legend>
+        <div class="swatches" id="categoryColors"></div>
+      </fieldset>
+
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-danger-text" id="categoryDeleteBtn" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="categorySaveBtn">Add category</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ===== Import ===== -->
+  <dialog id="importDialog" class="dialog dialog-sm" aria-labelledby="importDialogTitle">
+    <form id="importForm" class="dialog-form">
+      <h2 id="importDialogTitle">Import data</h2>
+      <p class="import-summary" id="importSummary"></p>
+
+      <fieldset class="field">
+        <legend>How should it be imported?</legend>
+        <label class="radio-row">
+          <input type="radio" name="importMode" value="merge" checked>
+          <span><strong>Merge</strong> — add new tasks and categories; a task that already exists (same ID) is updated when the imported copy is newer.</span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="importMode" value="replace">
+          <span><strong>Replace</strong> — remove everything in this browser and load the file instead.</span>
+        </label>
+      </fieldset>
+
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Import</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ===== Confirm ===== -->
+  <dialog id="confirmDialog" class="dialog dialog-sm" aria-labelledby="confirmTitle">
+    <form id="confirmForm" class="dialog-form">
+      <h2 id="confirmTitle"></h2>
+      <p class="dialog-text" id="confirmMessage"></p>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="confirmOk">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ===== Help ===== -->
+  <dialog id="helpDialog" class="dialog dialog-sm" aria-labelledby="helpTitle">
+    <div class="dialog-form">
+      <h2 id="helpTitle">Shortcuts &amp; tips</h2>
+
+      <h3 class="dialog-subhead">Keyboard</h3>
+      <dl class="shortcuts">
+        <dt><kbd>N</kbd></dt><dd>New task</dd>
+        <dt><kbd>A</kbd></dt><dd>Jump to quick add</dd>
+        <dt><kbd>/</kbd></dt><dd>Search</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Clear search / close</dd>
+        <dt><kbd>Ctrl</kbd> + <kbd>Enter</kbd></dt><dd>Save the task you're editing</dd>
+        <dt><kbd>?</kbd></dt><dd>This help</dd>
+      </dl>
+
+      <h3 class="dialog-subhead">Quick add syntax</h3>
+      <dl class="shortcuts">
+        <dt><code>#Work</code></dt><dd>Put the task in an existing category</dd>
+        <dt><code>!low</code> <code>!high</code> <code>!urgent</code></dt><dd>Set priority (<code>!1</code>–<code>!4</code> also work, 1 = urgent)</dd>
+        <dt><code>@today</code> <code>@tomorrow</code></dt><dd>Due date</dd>
+        <dt><code>@mon</code> … <code>@sun</code></dt><dd>Next occurrence of that weekday</dd>
+        <dt><code>@+3</code></dt><dd>Due in 3 days</dd>
+        <dt><code>@2026-12-31</code></dt><dd>Exact date</dd>
+      </dl>
+
+      <h3 class="dialog-subhead">Tasks</h3>
+      <p class="dialog-text">Click a task's flag to cycle its priority. Click the title to edit. Deleting can be undone from the toast for a few seconds.</p>
+
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-primary" data-close>Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>
+  <input type="file" id="importFile" accept=".json,application/json" hidden>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

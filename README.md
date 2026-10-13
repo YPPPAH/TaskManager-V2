@@ -1,1 +1,129 @@
 # TaskManager-V2
+
+A small, fast task manager that runs entirely in your browser. No accounts, no server, no build step — open `index.html` and start adding tasks. Everything you enter is saved in the browser's `localStorage`, and you can export/import it as JSON at any time.
+
+## Running it
+
+- **Just open it:** double-click `index.html` (works from the file system).
+- **Or serve it** (useful on phones on the same network):
+  ```sh
+  python3 -m http.server 8000
+  # then open http://localhost:8000
+  ```
+
+There are no dependencies and nothing to install.
+
+## Features
+
+**Tasks**
+- Title, notes, category, priority and due date.
+- Quick-add bar with inline syntax: `Pay rent #Home !high @tomorrow`.
+- Click the flag on a task to cycle its priority; click the title to edit.
+- Complete / un-complete, delete with **Undo**.
+- Search across titles, notes and category names.
+- Sort by due date, priority, newest or title. Completed tasks always sink to the bottom.
+
+**Categories**
+- Create as many as you like, each with a colour.
+- A **toggle switch per category** shows or hides its tasks (plus a toggle for tasks with no category). *All* / *None* buttons flip every switch at once.
+- When exactly one category is switched on, new tasks default to it.
+- Deleting a category keeps its tasks and moves them to "No category".
+
+**Importance**
+- Four levels: Low, Normal, High, Urgent — shown as a coloured flag on every task.
+- Filter the list by priority; sort by priority.
+
+**Overdue tracking**
+- An **overdue counter** in the header (red badge) and in the stats row, plus a dedicated *Overdue* view. The browser tab title shows the count too, e.g. `(3) Tasks`.
+- Overdue tasks are marked with a red stripe and "N days overdue"; tasks due today get an amber stripe.
+- The counter rolls over correctly at midnight, even if the tab stays open.
+
+**Views**
+- *All tasks*, *Today* (due today + overdue), *Upcoming*, *Overdue*, *Completed*.
+- Stats tiles (Active · Due today · Overdue · Completed) double as shortcuts to the matching view.
+- Optional "Show completed" toggle for the All / Today / Upcoming views.
+
+**Data (lives in the browser)**
+- Saved automatically to `localStorage`; changes sync across open tabs.
+- **Export JSON** (full backup, re-importable) and **Export CSV** (for spreadsheets).
+- **Import JSON** via the sidebar button or by dragging a file anywhere onto the page.
+  - *Merge*: adds new tasks/categories; a task that already exists (same ID) is updated when the imported copy is newer. Categories are matched by ID, then by name.
+  - *Replace*: wipes the browser's data and loads the file instead.
+  - Imports and "Clear all data" can be undone for a few seconds.
+- "Load sample tasks" on the empty first screen to see the app populated.
+
+**Nice to have**
+- Light / dark theme (follows the OS until you pick one).
+- Responsive layout — the sidebar becomes a drawer on small screens.
+- Keyboard shortcuts (press `?` in the app).
+
+## Keyboard shortcuts
+
+| Key | Action |
+| --- | --- |
+| `N` | New task |
+| `A` | Jump to the quick-add box |
+| `/` | Search |
+| `Esc` | Clear search / close dialogs |
+| `Ctrl`/`⌘` + `Enter` | Save the task or category you are editing |
+| `?` | Show shortcuts & tips |
+
+## Quick-add syntax
+
+| Token | Effect |
+| --- | --- |
+| `#Work` | Put the task in an existing category (case-insensitive, spaces ignored: `#sideprojects` matches "Side Projects") |
+| `!low` `!normal` `!high` `!urgent` | Priority (`!1`–`!4` also work, 1 = urgent, `!!` = urgent) |
+| `@today` `@tomorrow` | Due date |
+| `@mon` … `@sun` / `@monday` … | Next occurrence of that weekday |
+| `@+3` | Due in 3 days |
+| `@2026-12-31` | Exact date |
+
+Tokens that don't match anything stay in the title.
+
+## Data format
+
+Exports look like this (the same shape is used in `localStorage` under the key `taskmanager-v2`, plus a `settings` object):
+
+```json
+{
+  "app": "TaskManager-V2",
+  "version": 1,
+  "exportedAt": "2026-10-13T09:30:00.000Z",
+  "categories": [
+    { "id": "c_abc123", "name": "Work", "color": "#3b82f6", "enabled": true, "createdAt": "…" }
+  ],
+  "tasks": [
+    {
+      "id": "t_def456",
+      "title": "Send the quarterly report",
+      "notes": "",
+      "categoryId": "c_abc123",
+      "priority": "high",
+      "dueDate": "2026-10-15",
+      "completed": false,
+      "completedAt": null,
+      "createdAt": "…",
+      "updatedAt": "…"
+    }
+  ]
+}
+```
+
+- `priority` is one of `low`, `normal`, `high`, `urgent`.
+- `dueDate` is a plain `YYYY-MM-DD` (no time zone surprises); `null` means no date.
+- Imports are validated and cleaned: unknown fields are dropped, bad values fall back to defaults, and tasks pointing at missing categories become uncategorised. Hand-edited files are fine.
+
+## Project layout
+
+```
+index.html      markup for the app shell and the dialogs
+css/styles.css  all styling; design tokens (colours, radii…) at the top, dark theme in [data-theme="dark"]
+js/app.js       all behaviour: storage & validation, derived data, rendering, actions, import/export
+```
+
+`app.js` is organised top-to-bottom as: constants → helpers → persistence/normalisation → derived data → rendering → actions → dialogs → import/export → events → init. Rendering is a straightforward "state → HTML" re-render, so most tweaks are a one-place change.
+
+## Ideas for later
+
+Sub-tasks, recurring tasks, drag-to-reorder, tags, browser notifications/reminders, a weekly calendar view, PWA/offline install.
