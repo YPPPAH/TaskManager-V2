@@ -214,14 +214,15 @@ kbd {
   color: var(--muted);
   pointer-events: none;
 }
-.search input {
+/* More specific than the generic input[type="search"] rule further down, which would otherwise win. */
+.search input[type="search"] {
   width: 100%;
   padding: 8px 36px 8px 34px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface-2);
 }
-.search input:focus { background: var(--surface); }
+.search input[type="search"]:focus { background: var(--surface); }
 .search-kbd {
   position: absolute;
   right: 10px;
@@ -344,6 +345,7 @@ textarea:focus,
 select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  outline: none;
 }
 textarea { resize: vertical; min-height: 72px; }
 select { cursor: pointer; }
