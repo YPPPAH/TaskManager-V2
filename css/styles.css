@@ -200,11 +200,11 @@ kbd {
   color: var(--on-accent);
 }
 
+.topbar-spacer { flex: 1 1 0; min-width: 8px; }
 .search {
   position: relative;
-  flex: 1 1 auto;
-  max-width: 420px;
-  margin-left: auto;
+  flex: 0 1 380px;
+  min-width: 0;
 }
 .search-icon {
   position: absolute;
@@ -327,9 +327,12 @@ kbd {
 input[type="text"],
 input[type="search"],
 input[type="date"],
+input[type="time"],
+input[type="number"],
 textarea,
 select {
   width: 100%;
+  min-height: 42px;
   padding: 9px 11px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
@@ -341,6 +344,8 @@ select {
 input[type="text"]:focus,
 input[type="search"]:focus,
 input[type="date"]:focus,
+input[type="time"]:focus,
+input[type="number"]:focus,
 textarea:focus,
 select:focus {
   border-color: var(--accent);
@@ -348,6 +353,12 @@ select:focus {
   outline: none;
 }
 textarea { resize: vertical; min-height: 72px; }
+input[type="date"],
+input[type="time"] { font-variant-numeric: tabular-nums; }
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator { cursor: pointer; opacity: 0.7; }
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 select { cursor: pointer; }
 
 .control {
@@ -586,6 +597,32 @@ button.cat-name:hover { color: var(--accent); text-decoration: underline; }
 .data-actions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .side-section .hint { padding: 0 10px; margin-bottom: 8px; }
 .side-section .link-btn { margin-left: 10px; }
+
+/* Collapsible sidebar section (Data & backup) */
+.side-details { margin-top: 4px; }
+.side-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.side-summary::-webkit-details-marker { display: none; }
+.side-summary:hover { background: var(--surface-2); }
+.side-summary h2 {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.summary-chevron { color: var(--muted); transition: transform 0.15s; }
+.side-details[open] .summary-chevron { transform: rotate(90deg); }
+.side-details .data-actions { margin-top: 8px; }
+.side-help { margin-left: 10px; }
 
 /* ---------- Stats ---------- */
 
@@ -925,7 +962,7 @@ fieldset.field { border: 0; padding: 0; margin: 0; }
   color: inherit;
   font-weight: 700;
 }
-[data-theme="light"] .toast:not(.toast-error) .toast-action { background: rgba(255, 255, 255, 0.18); color: #9dc0ff; }
+[data-theme="light"] .toast:not(.toast-error):not(.toast-alarm) .toast-action { background: rgba(255, 255, 255, 0.18); color: #9dc0ff; }
 .toast-action:hover { background: rgba(255, 255, 255, 0.26); }
 .toast-close {
   display: grid;
@@ -940,6 +977,18 @@ fieldset.field { border: 0; padding: 0; margin: 0; }
   opacity: 0.7;
 }
 .toast-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
+
+.toast-alarm {
+  background: var(--danger);
+  color: #fff;
+  animation: toast-in 0.18s ease-out, alarm-pulse 1s ease-in-out infinite;
+}
+.toast-alarm .toast-action { background: #fff; color: var(--danger); }
+.toast-alarm .toast-action:hover { background: #ffe4e1; }
+@keyframes alarm-pulse {
+  0%, 100% { box-shadow: var(--shadow-lg), 0 0 0 0 color-mix(in srgb, var(--danger) 55%, transparent); }
+  50% { box-shadow: var(--shadow-lg), 0 0 0 8px color-mix(in srgb, var(--danger) 0%, transparent); }
+}
 
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(10px); }
@@ -1325,7 +1374,8 @@ body[data-mode="schedule"] .search { display: none; }
   body.sidebar-open .sidebar { transform: none; box-shadow: var(--shadow-lg); }
   .content { padding: 16px 14px 96px; }
   .brand-text { display: none; }
-  .search { max-width: none; }
+  .topbar-spacer { display: none; }
+  .search { flex: 1 1 auto; }
   #newTaskBtn .btn-label { display: none; }
   #newTaskBtn { padding: 8px 10px; }
 }

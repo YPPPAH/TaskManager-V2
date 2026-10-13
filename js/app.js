@@ -1522,32 +1522,83 @@
     if (notificationState() !== 'granted') return;
     try {
       const n = new Notification(title, { body, tag });
-      n.onclick = () => { try { window.focus(); } catch (e) { /* ignore */ } n.close(); };
+      n.onclick = () => { try { window.focus(); } catch (e) { /* ignore */ } n.close(); stopAlarm(); };
     } catch (e) { /* e.g. Chrome on Android needs a service worker; the in-page toast still shows */ }
   }
 
+  // ---------- Alarm sound ----------
+  // A one-second pattern (two short beeps, then silence) looped by Web Audio until stopAlarm() is called.
+  // Looping inside the audio engine keeps ringing even when the tab is in the background and timers are
+  // throttled. The context is created on the first click/keypress so browsers allow it to make sound.
+
+  const ALARM_MAX_MS = 10 * 60 * 1000; // safety cap: stop ringing after 10 minutes
   let audioCtx = null;
-  function beep() {
+  let alarmBuffer = null;
+  let alarm = null; // { source, timer, toast }
+
+  function ensureAudio() {
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
+      if (!Ctx) return null;
       if (!audioCtx) audioCtx = new Ctx();
       if (audioCtx.state === 'suspended') audioCtx.resume();
-      const t0 = audioCtx.currentTime;
-      [0, 0.22].forEach(offset => {
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = 880;
-        gain.gain.setValueAtTime(0.0001, t0 + offset);
-        gain.gain.exponentialRampToValueAtTime(0.2, t0 + offset + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + offset + 0.18);
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start(t0 + offset);
-        osc.stop(t0 + offset + 0.2);
-      });
-    } catch (e) { /* audio is best effort */ }
+      return audioCtx;
+    } catch (e) { return null; }
+  }
+
+  function buildAlarmBuffer(ctx) {
+    const rate = ctx.sampleRate;
+    const buf = ctx.createBuffer(1, rate, rate); // exactly one second
+    const ch = buf.getChannelData(0);
+    [[0, 0.15], [0.22, 0.37]].forEach(([from, to]) => {
+      const a = Math.floor(from * rate), b = Math.floor(to * rate), len = to - from;
+      for (let i = a; i < b; i++) {
+        const t = (i - a) / rate;
+        const env = Math.max(0, Math.min(1, t / 0.01, (len - t) / 0.03)); // short attack/release, no clicks
+        ch[i] = Math.sin(2 * Math.PI * 880 * t) * 0.25 * env;
+      }
+    });
+    return buf;
+  }
+
+  function alarmRinging() { return !!alarm; }
+
+  function startAlarm() {
+    if (alarm) return true;
+    const ctx = ensureAudio();
+    if (!ctx || ctx.state !== 'running') return false;
+    try {
+      if (!alarmBuffer) alarmBuffer = buildAlarmBuffer(ctx);
+      const source = ctx.createBufferSource();
+      source.buffer = alarmBuffer;
+      source.loop = true;
+      source.connect(ctx.destination);
+      source.start();
+      alarm = { source, timer: setTimeout(stopAlarm, ALARM_MAX_MS), toast: null };
+      document.body.classList.add('alarm-ringing');
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function stopAlarm() {
+    if (!alarm) return;
+    const a = alarm;
+    alarm = null; // clear first: the toast's onClose calls back into stopAlarm
+    clearTimeout(a.timer);
+    try { a.source.stop(); a.source.disconnect(); } catch (e) { /* already stopped */ }
+    document.body.classList.remove('alarm-ringing');
+    if (a.toast) a.toast.remove();
+  }
+
+  /** Show a reminder in the page: a ringing, sticky toast when sound is on, otherwise a plain one. */
+  function announce(title, body) {
+    const text = body ? `${title} — ${body}` : title;
+    if (data.settings.reminderSound && startAlarm()) {
+      if (alarm.toast) alarm.toast.remove(); // one ringing toast at a time; keep the latest text
+      alarm.toast = toast(text, { sticky: true, cls: 'toast-alarm', action: 'Stop', onAction: stopAlarm, onClose: stopAlarm });
+    } else {
+      toast(text, { duration: 15000, action: 'Schedule', onAction: () => setMode('schedule') });
+    }
   }
 
   function reminderText(ev, lead) {
@@ -1573,8 +1624,7 @@
   function deliverReminder(ev, lead, key) {
     const msg = reminderText(ev, lead);
     showNotification(msg.title, msg.body, key);
-    toast(`${msg.title} — ${msg.body}`, { duration: 15000, action: 'Schedule', onAction: () => setMode('schedule') });
-    if (data.settings.reminderSound) beep();
+    announce(msg.title, msg.body);
   }
 
   function checkReminders() {
@@ -1595,10 +1645,9 @@
 
   function sendTestReminder() {
     const fire = () => {
-      showNotification('Reminders are working', 'This is what a schedule reminder looks like.', 'test-' + Date.now());
       const system = notificationState() === 'granted';
-      toast('Test reminder sent' + (system ? '' : ' — in-page only, system notifications are off'), { duration: 6000 });
-      if (data.settings.reminderSound) beep();
+      showNotification('Reminders are working', 'This is what a schedule reminder looks like.', 'test-' + Date.now());
+      announce('Test reminder', system ? 'This is what a reminder looks like.' : 'In-page only — system notifications are off.');
     };
     if (notificationState() === 'default') requestNotificationPermission(fire);
     else fire();
@@ -1622,25 +1671,36 @@
 
   // ---------- Toasts ----------
 
+  /**
+   * Options: type ('error'), action + onAction (button), duration (ms), sticky (no auto-dismiss),
+   * cls (extra class), onClose (called once when the toast goes away for any reason).
+   */
   function toast(message, opts) {
     const o = opts || {};
     const node = document.createElement('div');
-    node.className = 'toast' + (o.type === 'error' ? ' toast-error' : '');
-    node.setAttribute('role', 'status');
+    node.className = 'toast' + (o.type === 'error' ? ' toast-error' : '') + (o.cls ? ' ' + o.cls : '') + (o.sticky ? ' toast-sticky' : '');
+    node.setAttribute('role', o.sticky ? 'alert' : 'status');
     node.innerHTML = `<span class="toast-msg"></span>${o.action ? `<button type="button" class="toast-action">${escapeHtml(o.action)}</button>` : ''}<button type="button" class="toast-close" aria-label="Dismiss">${icon('x', 14)}</button>`;
     node.querySelector('.toast-msg').textContent = message;
 
+    let removed = false;
     const remove = () => {
+      if (removed) return;
+      removed = true;
       clearTimeout(timer);
       node.classList.add('leaving');
       setTimeout(() => node.remove(), 180);
+      if (o.onClose) o.onClose();
     };
-    const timer = setTimeout(remove, o.duration || (o.action ? UNDO_MS : 3500));
+    const timer = o.sticky ? null : setTimeout(remove, o.duration || (o.action ? UNDO_MS : 3500));
     if (o.action) node.querySelector('.toast-action').addEventListener('click', () => { remove(); if (o.onAction) o.onAction(); });
     node.querySelector('.toast-close').addEventListener('click', remove);
 
     el.toasts.appendChild(node);
-    while (el.toasts.children.length > 3) el.toasts.firstElementChild.remove();
+    // Keep the stack short, but never drop a sticky toast (e.g. a ringing alarm).
+    const disposable = Array.from(el.toasts.children).filter(n => !n.classList.contains('toast-sticky'));
+    while (el.toasts.children.length > 3 && disposable.length) disposable.shift().remove();
+    return { node, remove };
   }
 
   // ---------- Sidebar (mobile) ----------
@@ -1685,6 +1745,7 @@
 
   function onKeydown(e) {
     if (e.defaultPrevented) return;
+    if (e.key === 'Escape' && alarmRinging()) { stopAlarm(); return; }
 
     if (document.querySelector('dialog[open]')) {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -1841,6 +1902,9 @@
 
     // Keyboard shortcuts
     document.addEventListener('keydown', onKeydown);
+
+    // Browsers only let a page make sound after the user has interacted with it: unlock audio on the first gesture
+    ['pointerdown', 'keydown'].forEach(evt => document.addEventListener(evt, () => ensureAudio(), { once: true, capture: true }));
 
     // Drag a JSON export anywhere onto the page to import it
     let dragDepth = 0;

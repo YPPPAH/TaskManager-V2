@@ -65,12 +65,14 @@ There are no dependencies and nothing to install.
 **Reminders**
 - Fire *X minutes before* each switch: before a block starts, before it ends, or "A → B" when one block runs straight into the next. Choose 0 (at the switch), 5, 10, 15, 30 or 60 minutes in the sidebar.
 - Delivered as a **system notification** (after you allow them with *Enable notifications*), an **in-page toast**, and an optional **sound**. "Send a test reminder" checks everything is working.
+- With sound on, the alarm **rings until you stop it** — click *Stop* on the toast, click the notification, or press `Esc`. As a safety net it stops by itself after 10 minutes (`ALARM_MAX_MS` in `js/app.js`). Browsers only allow sound after you've interacted with the page once, so open the app and click anything before relying on it.
 - Each block has a "Remind me" switch so you can mute individual blocks.
 - **Reminders only fire while the page is open in a tab.** There's no server behind this app, so nothing can wake it when it's closed. Keep the tab open (it can be in the background) and the app polls every 20 seconds.
 - A reminder is delivered once per day per moment, even if you reload the page, and it is skipped (not fired late) if the moment is more than two minutes past — for example after the laptop wakes from sleep.
 
 ## Data (lives in the browser)
 
+- The **Data & backup** section sits collapsed at the bottom of the sidebar — click it to open.
 - Saved automatically to `localStorage`; changes sync across open tabs.
 - **Export JSON** (full backup, re-importable, includes tasks, categories and time blocks) and **Export CSV** (tasks, for spreadsheets).
 - **Import JSON** via the sidebar button or by dragging a file anywhere onto the page.
@@ -93,7 +95,7 @@ There are no dependencies and nothing to install.
 | `N` | New task (or new block, in Schedule) |
 | `A` | Jump to the quick-add box |
 | `/` | Search |
-| `Esc` | Clear search / close dialogs |
+| `Esc` | Stop a ringing alarm / clear search / close dialogs |
 | `Ctrl`/`⌘` + `Enter` | Save the task, category or block you are editing |
 | `?` | Show shortcuts & tips |
 
