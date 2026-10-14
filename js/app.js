@@ -20,6 +20,8 @@
     urgent: { label: 'Urgent', rank: 3 },
   };
   const PRIORITY_ORDER = ['low', 'normal', 'high', 'urgent'];
+  const REPEAT_UNITS = ['day', 'week', 'month', 'year'];
+  const REPEAT_MAX_EVERY = 99;
 
   const CATEGORY_COLORS = [
     '#3b82f6', '#8b5cf6', '#ec4899', '#ef4444', '#f97316',
@@ -258,13 +260,18 @@
     if (!title) return null;
     const created = isoOr(t.createdAt, nowIso());
     const completed = t.completed === true || t.completed === 'true' || t.completed === 1;
+    const repeat = normalizeRepeat(t.repeat);
+    const dueDate = isDateStr(t.dueDate) ? t.dueDate : (repeat ? todayStr() : null); // a repeating task needs a date to count from
+    if (repeat && repeat.unit === 'week' && !repeat.days.length) repeat.days = [weekdayOf(dueDate)];
     return {
       id: normalizeId(t.id, 't'),
       title,
       notes: String(t.notes == null ? '' : t.notes).slice(0, 2000),
       categoryId: typeof t.categoryId === 'string' && catIds.has(t.categoryId) ? t.categoryId : null,
       priority: normalizePriority(t.priority),
-      dueDate: isDateStr(t.dueDate) ? t.dueDate : null,
+      dueDate,
+      repeat,                                                             // null, or { every, unit, days, from }
+      seriesId: typeof t.seriesId === 'string' && ID_RE.test(t.seriesId) ? t.seriesId : null, // completed copies point at the repeating task
       completed,
       completedAt: completed ? isoOr(t.completedAt, created) : null,
       createdAt: created,
@@ -299,6 +306,15 @@
       createdAt: created,
       updatedAt: isoOr(b.updatedAt, created),
     };
+  }
+
+  function normalizeRepeat(r) {
+    if (!r || typeof r !== 'object' || !REPEAT_UNITS.includes(r.unit)) return null;
+    const every = Math.min(REPEAT_MAX_EVERY, Math.max(1, Math.round(Number(r.every)) || 1));
+    const days = r.unit === 'week' && Array.isArray(r.days)
+      ? Array.from(new Set(r.days.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6))).sort((x, y) => x - y)
+      : [];
+    return { every, unit: r.unit, days, from: r.from === 'done' ? 'done' : 'due' };
   }
 
   function normalizePriority(p) {
@@ -436,6 +452,67 @@
     const opts = { month: 'short', day: 'numeric' };
     if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
     return d.toLocaleDateString(undefined, opts);
+  }
+
+  // ---------- Repeating tasks ----------
+
+  function daysBetween(a, b) { return Math.round((parseDateStr(b) - parseDateStr(a)) / 86400000); }
+
+  /** base + n months, keeping base's day of month where the target month has it (Jan 31 → Feb 28 → Mar 31). */
+  function addMonthsClamped(dateStr, n) {
+    const d = parseDateStr(dateStr);
+    const target = new Date(d.getFullYear(), d.getMonth() + n, 1);
+    const last = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    target.setDate(Math.min(d.getDate(), last));
+    return toDateStr(target);
+  }
+
+  /** First date of the series anchored at `base` that is strictly after `after`. */
+  function nextOccurrence(r, base, after) {
+    if (r.unit === 'day') {
+      const n = Math.floor(Math.max(0, daysBetween(base, after)) / r.every) + 1;
+      return addDays(base, n * r.every);
+    }
+    if (r.unit === 'week') {
+      const days = r.days.length ? r.days : [weekdayOf(base)];
+      const week0 = startOfWeek(base);
+      let d = after;
+      for (let i = 0; i < r.every * 7 + 7; i++) {
+        d = addDays(d, 1);
+        const weeks = daysBetween(week0, startOfWeek(d)) / 7;
+        if (days.includes(weekdayOf(d)) && ((weeks % r.every) + r.every) % r.every === 0) return d;
+      }
+      return addDays(after, 1); // unreachable; keeps the function total
+    }
+    const step = r.unit === 'month' ? r.every : r.every * 12;
+    for (let n = 1; n < 100000; n++) {
+      const d = addMonthsClamped(base, n * step);
+      if (d > after) return d;
+    }
+    return addDays(after, 1);
+  }
+
+  /** Where a repeating task goes after being ticked off: never earlier than today. */
+  function nextDueAfterCompletion(t) {
+    const r = t.repeat;
+    if (r.from === 'done') return nextOccurrence(r, ui.today, ui.today);
+    const due = t.dueDate || ui.today;
+    return nextOccurrence(r, due, due >= ui.today ? due : addDays(ui.today, -1));
+  }
+
+  /** "Daily", "Every 2 weeks on Mon, Thu", "Monthly" … */
+  function repeatLabel(r) {
+    const unitWord = { day: 'days', week: 'weeks', month: 'months', year: 'years' }[r.unit];
+    const once = { day: 'Daily', week: 'Weekly', month: 'Monthly', year: 'Yearly' }[r.unit];
+    let label = r.every === 1 ? once : `Every ${r.every} ${unitWord}`;
+    if (r.unit === 'week' && r.days.length) {
+      const ordered = [1, 2, 3, 4, 5, 6, 0].filter(d => r.days.includes(d));
+      if (ordered.length === 7) label = r.every === 1 ? 'Daily' : label + ' on every day';
+      else if (ordered.join() === '1,2,3,4,5') label += ' on weekdays';
+      else if (ordered.join() === '6,0') label += ' at weekends';
+      else label += ' on ' + ordered.map(d => WEEKDAY_SHORT[d]).join(', ');
+    }
+    return label;
   }
 
   function dueInfo(t) {
@@ -635,6 +712,8 @@
     const meta = [];
     if (cat) meta.push(`<span class="cat-chip" style="--cat:${cat.color}">${escapeHtml(cat.name)}</span>`);
     if (due) meta.push(`<span class="due ${due.cls}" title="Due ${escapeHtml(due.title)}">${icon('calendar', 13)}${escapeHtml(due.label)}</span>`);
+    if (t.repeat) meta.push(`<span class="repeat-tag" title="Repeats ${escapeHtml(repeatLabel(t.repeat).toLowerCase())}${t.repeat.from === 'done' ? ', counted from the day you complete it' : ''}">${icon('repeat', 13)}${escapeHtml(repeatLabel(t.repeat))}</span>`);
+    else if (t.seriesId) meta.push(`<span class="repeat-tag" title="A completed round of a repeating task">${icon('repeat', 13)}repeating</span>`);
     if (t.notes) meta.push(`<span class="notes-preview">${escapeHtml(t.notes)}</span>`);
 
     return `
@@ -854,6 +933,7 @@
   function toggleComplete(id) {
     const t = getTask(id);
     if (!t) return;
+    if (!t.completed && t.repeat) { completeRecurring(t); return; }
     t.completed = !t.completed;
     t.completedAt = t.completed ? nowIso() : null;
     t.updatedAt = nowIso();
@@ -861,6 +941,36 @@
     if (t.completed && !isVisibleNow(id)) {
       toast(`Completed “${truncate(t.title)}”`, { action: 'Undo', onAction: () => toggleComplete(id) });
     }
+  }
+
+  /** Ticking off a repeating task files a completed copy for the record and moves the task itself to its next date. */
+  function completeRecurring(t) {
+    const prevDue = t.dueDate;
+    const next = nextDueAfterCompletion(t);
+    const now = nowIso();
+    const record = normalizeTask(Object.assign({}, t, { id: null, repeat: null, seriesId: t.id, completed: true, completedAt: now, updatedAt: now }), categoryIdSet());
+    if (!record) return;
+    data.tasks.push(record);
+    t.dueDate = next;
+    t.updatedAt = now;
+    commit();
+    toast(`Done — “${truncate(t.title)}” comes back ${formatDueWord(next)}`, {
+      action: 'Undo',
+      onAction: () => {
+        const idx = data.tasks.findIndex(x => x.id === record.id);
+        if (idx >= 0) data.tasks.splice(idx, 1);
+        const live = getTask(t.id);
+        if (live) { live.dueDate = prevDue; live.updatedAt = nowIso(); }
+        commit();
+      },
+    });
+  }
+
+  function formatDueWord(dateStr) {
+    const n = daysFromToday(dateStr);
+    if (n === 0) return 'today';
+    if (n === 1) return 'tomorrow';
+    return 'on ' + parseDateStr(dateStr).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
   }
 
   function cyclePriority(id) {
@@ -913,7 +1023,8 @@
       notes: '',
       categoryId: parsed.categoryId || defaultCategoryId(),
       priority: parsed.priority || 'normal',
-      dueDate: parsed.dueDate || defaultDueDate(),
+      dueDate: parsed.dueDate || (parsed.repeat ? firstOccurrenceFromToday(parsed.repeat) : defaultDueDate()),
+      repeat: parsed.repeat,
     });
     el.quickAddInput.value = '';
     if (t) notifyIfHidden(t);
@@ -921,7 +1032,9 @@
 
   /** "Pay rent #Home !high @tomorrow" → { title: 'Pay rent', categoryId, priority: 'high', dueDate } */
   function parseQuickAdd(text) {
-    const out = { title: '', categoryId: null, priority: null, dueDate: null };
+    const out = { title: '', categoryId: null, priority: null, dueDate: null, repeat: null };
+    const rep = parseRepeatPhrase(text);
+    if (rep) { out.repeat = rep.repeat; text = rep.rest; }
     const words = [];
     for (const token of text.split(/\s+/)) {
       if (token.length > 1) {
@@ -934,6 +1047,37 @@
     }
     out.title = words.join(' ').trim();
     return out;
+  }
+
+  /** "every day", "every 2 weeks", "every mon, thu", "every weekday", "daily" … → { repeat, rest } or null. */
+  function parseRepeatPhrase(text) {
+    const dayPat = '(?:sun|mon|tue|wed|thu|fri|sat)[a-z]*';
+    const m = text.match(new RegExp(
+      '(?:^|\\s)(?:' +
+        'every\\s+(?:(\\d{1,2})\\s+)?(day|week|month|year)s?' +                               // every [N] unit(s)
+        '|every\\s+(weekday|weekend)s?' +
+        '|every\\s+(' + dayPat + '(?:\\s*(?:,|and|&)\\s*' + dayPat + ')*)' +                // every mon, wed and fri
+        '|(daily|weekly|monthly|yearly|annually)' +
+      ')(?=\\s|$)', 'i'));
+    if (!m) return null;
+    let repeat;
+    if (m[2]) repeat = { every: m[1] ? +m[1] : 1, unit: m[2].toLowerCase(), days: [] };
+    else if (m[3]) repeat = { every: 1, unit: 'week', days: m[3].toLowerCase() === 'weekday' ? [1, 2, 3, 4, 5] : [0, 6] };
+    else if (m[4]) {
+      const days = m[4].toLowerCase().split(/\s*(?:,|and|&)\s*/).map(w => WEEKDAYS.findIndex(x => x === w || x.slice(0, 3) === w)).filter(d => d >= 0);
+      repeat = { every: 1, unit: 'week', days };
+    } else {
+      const w = m[5].toLowerCase();
+      repeat = { every: 1, unit: w === 'daily' ? 'day' : w === 'weekly' ? 'week' : w === 'monthly' ? 'month' : 'year', days: [] };
+    }
+    const rest = (text.slice(0, m.index) + ' ' + text.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim();
+    return { repeat: normalizeRepeat(repeat), rest };
+  }
+
+  /** Due date for a new repeating task without one: today, or the next of its weekdays. */
+  function firstOccurrenceFromToday(r) {
+    if (r.unit === 'week' && r.days.length && !r.days.includes(weekdayOf(ui.today))) return nextOccurrence(r, ui.today, ui.today);
+    return ui.today;
   }
 
   function findCategoryByToken(tok) {
@@ -980,8 +1124,49 @@
     el.taskNotes.value = t ? t.notes : '';
     el.taskDue.value = t ? (t.dueDate || '') : (d.dueDate || defaultDueDate() || '');
     setRadio(el.taskForm, 'priority', t ? t.priority : (d.priority || 'normal'));
+    fillRepeatFields(t ? t.repeat : (d.repeat || null));
     el.taskDialog.showModal();
     el.taskTitle.focus();
+  }
+
+  function fillRepeatFields(r) {
+    el.taskRepeatUnit.value = r ? r.unit : '';
+    el.taskRepeatEvery.value = r ? r.every : 1;
+    el.taskRepeatFrom.value = r ? r.from : 'due';
+    const due = isDateStr(el.taskDue.value) ? el.taskDue.value : ui.today;
+    renderDayChips(el.taskRepeatDays, r && r.unit === 'week' && r.days.length ? r.days : [weekdayOf(due)]);
+    updateRepeatFields();
+  }
+
+  /** Read the Repeat fieldset; null when the task does not repeat. */
+  function readRepeatFields() {
+    const unit = el.taskRepeatUnit.value;
+    if (!unit) return null;
+    return normalizeRepeat({
+      every: +el.taskRepeatEvery.value || 1,
+      unit,
+      days: Array.from(el.taskRepeatDays.querySelectorAll('input:checked')).map(i => +i.value),
+      from: el.taskRepeatFrom.value,
+    });
+  }
+
+  function updateRepeatFields() {
+    const r = readRepeatFields();
+    el.taskRepeatEveryWrap.hidden = !r;
+    el.taskRepeatDays.hidden = !r || r.unit !== 'week';
+    el.taskRepeatOptions.hidden = !r;
+    // Closed: "Daily / Weekly …"; once chosen the row reads "Every [N] day(s)".
+    const every = +el.taskRepeatEvery.value || 1;
+    const names = !r ? { day: 'Daily', week: 'Weekly', month: 'Monthly', year: 'Yearly' }
+      : every === 1 ? { day: 'day', week: 'week', month: 'month', year: 'year' }
+      : { day: 'days', week: 'weeks', month: 'months', year: 'years' };
+    Array.from(el.taskRepeatUnit.options).forEach(o => { if (o.value) o.textContent = names[o.value]; });
+    if (!r) { el.taskRepeatHint.textContent = ''; return; }
+    const due = isDateStr(el.taskDue.value) ? el.taskDue.value : ui.today;
+    const rr = r.unit === 'week' && !r.days.length ? Object.assign({}, r, { days: [weekdayOf(due)] }) : r;
+    const next = nextOccurrence(rr, due, due);
+    el.taskRepeatHint.textContent = `${repeatLabel(rr)}. Ticking it off moves it to ${r.from === 'done' ? 'the next date after that day' : 'the next date'} — from ${formatShortDate(due)} that would be ${formatShortDate(next)}.`
+      + (isDateStr(el.taskDue.value) ? '' : ' Starts today, since there is no due date yet.');
   }
 
   function fillCategorySelect(select, selectedId) {
@@ -1014,12 +1199,14 @@
     e.preventDefault();
     const title = el.taskTitle.value.trim();
     if (!title) { el.taskTitle.value = ''; el.taskTitle.reportValidity(); return; }
+    const repeat = readRepeatFields();
     const fields = {
       title,
       notes: el.taskNotes.value.trim(),
       categoryId: el.taskCategory.value || null,
-      dueDate: isDateStr(el.taskDue.value) ? el.taskDue.value : null,
+      dueDate: isDateStr(el.taskDue.value) ? el.taskDue.value : (repeat ? firstOccurrenceFromToday(repeat) : null),
       priority: getRadio(el.taskForm, 'priority') || 'normal',
+      repeat,
     };
     const editingId = ui.editingTaskId;
     el.taskDialog.close();
@@ -1125,10 +1312,10 @@
   }
 
   function exportCsv() {
-    const header = ['id', 'title', 'notes', 'category', 'priority', 'due_date', 'completed', 'completed_at', 'created_at', 'updated_at'];
+    const header = ['id', 'title', 'notes', 'category', 'priority', 'due_date', 'repeat', 'completed', 'completed_at', 'created_at', 'updated_at'];
     const rows = data.tasks.map(t => {
       const c = getCategory(t.categoryId);
-      return [t.id, t.title, t.notes, c ? c.name : '', t.priority, t.dueDate || '', t.completed ? 'yes' : 'no', t.completedAt || '', t.createdAt, t.updatedAt];
+      return [t.id, t.title, t.notes, c ? c.name : '', t.priority, t.dueDate || '', t.repeat ? repeatLabel(t.repeat) : '', t.completed ? 'yes' : 'no', t.completedAt || '', t.createdAt, t.updatedAt];
     });
     const csv = [header].concat(rows).map(r => r.map(csvCell).join(',')).join('\r\n');
     downloadFile(`tasks-${ui.today}.csv`, '﻿' + csv, 'text/csv;charset=utf-8');
@@ -1239,7 +1426,9 @@
       { title: 'Plan weekend hike', categoryId: cat.Health, priority: 'low', dueDate: d(5) },
       { title: 'Buy a birthday present for Sam', categoryId: null, priority: 'high', dueDate: d(9) },
       { title: 'Read “Deep Work”, chapter 3', categoryId: cat.Personal, priority: 'low', dueDate: null },
-      { title: 'Water the plants', categoryId: cat.Home, priority: 'low', dueDate: d(-2), completed: true },
+      { title: 'Water the plants', categoryId: cat.Home, priority: 'low', dueDate: d(1), repeat: { every: 3, unit: 'day', from: 'done' } },
+      { title: 'Weekly review', categoryId: cat.Work, priority: 'normal', dueDate: d((5 - weekdayOf(ui.today) + 7) % 7), repeat: { every: 1, unit: 'week', days: [5] } },
+      { title: 'Pay rent', categoryId: cat.Home, priority: 'high', dueDate: addMonthsClamped(ui.today.slice(0, 8) + '01', 1), repeat: { every: 1, unit: 'month' } },
       { title: 'Finish maths exercises 4–6', categoryId: cat.Study, priority: 'high', dueDate: d(0) },
     ];
     const ids = categoryIdSet();
@@ -1340,7 +1529,7 @@
     el.blockStart.value = start;
     el.blockEnd.value = b ? b.end : (d.end || minToHm(Math.min(hmToMin(start) + 60, 23 * 60 + 59)));
     el.blockRepeat.checked = b ? !b.date : !d.date;
-    renderDayChips(b ? b.days : (d.days || [weekdayOf(ui.scheduleDate)]));
+    renderDayChips(el.blockDaysWrap, b ? b.days : (d.days || [weekdayOf(ui.scheduleDate)]));
     el.blockDate.value = b && b.date ? b.date : (d.date || ui.scheduleDate);
     updateRepeatUI();
     fillTaskSelect(b ? b.taskId : (d.taskId || null));
@@ -1352,9 +1541,9 @@
     el.blockTitle.focus();
   }
 
-  function renderDayChips(selectedDays) {
+  function renderDayChips(container, selectedDays) {
     const order = [1, 2, 3, 4, 5, 6, 0]; // Monday first
-    el.blockDaysWrap.innerHTML = order.map(d => `
+    container.innerHTML = order.map(d => `
       <label class="day-chip"><input type="checkbox" name="days" value="${d}" ${selectedDays.includes(d) ? 'checked' : ''}><span>${WEEKDAY_SHORT[d]}</span></label>`).join('');
   }
 
@@ -1973,7 +2162,12 @@
       if (!b) return;
       const v = b.dataset.quickDate;
       el.taskDue.value = v === 'clear' ? '' : addDays(ui.today, +v);
+      updateRepeatFields();
     });
+    ['taskRepeatUnit', 'taskRepeatEvery', 'taskRepeatFrom', 'taskRepeatDays', 'taskDue'].forEach(id => {
+      el[id].addEventListener('change', updateRepeatFields);
+    });
+    el.taskRepeatEvery.addEventListener('input', updateRepeatFields);
     el.taskDeleteBtn.addEventListener('click', () => {
       const id = ui.editingTaskId;
       el.taskDialog.close();

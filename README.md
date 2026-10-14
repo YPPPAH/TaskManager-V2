@@ -22,7 +22,8 @@ There are no dependencies and nothing to install.
 
 **Tasks**
 - Title, notes, category, priority and due date.
-- Quick-add bar with inline syntax: `Pay rent #Home !high @tomorrow`.
+- **Repeating tasks**: daily, weekly (on the weekdays you pick), monthly or yearly, or every *N* of those. Ticking one off files a completed copy (so the *Completed* view and counter stay honest) and moves the task itself to its next date — never earlier than today, so an overdue repeat doesn't come straight back as overdue. The next date counts from the due date, or from the day you complete it (handy for "every 3 days" chores). Undo from the toast.
+- Quick-add bar with inline syntax: `Pay rent #Home !high @tomorrow every month`.
 - Click the flag on a task to cycle its priority; click the title to edit.
 - Complete / un-complete, delete with **Undo**.
 - Search across titles, notes and category names.
@@ -110,6 +111,7 @@ There are no dependencies and nothing to install.
 | `@mon` … `@sun` / `@monday` … | Next occurrence of that weekday |
 | `@+3` | Due in 3 days |
 | `@2026-12-31` | Exact date |
+| `every day` `every 2 weeks` `every month` `every mon, thu` `every weekday` `daily` `monthly` … | Repeat. Without a date the task starts today (or on the next of the weekdays named) |
 
 Tokens that don't match anything stay in the title.
 
@@ -133,6 +135,8 @@ Exports look like this (the same shape is used in `localStorage` under the key `
       "categoryId": "c_abc123",
       "priority": "high",
       "dueDate": "2026-10-15",
+      "repeat": { "every": 1, "unit": "week", "days": [1, 4], "from": "due" },
+      "seriesId": null,
       "completed": false,
       "completedAt": null,
       "createdAt": "…",
@@ -162,6 +166,7 @@ Exports look like this (the same shape is used in `localStorage` under the key `
 
 - `priority` is one of `low`, `normal`, `high`, `urgent`.
 - `dueDate` is a plain `YYYY-MM-DD` (no time zone surprises); `null` means no date.
+- `repeat` is `null` or `{ every, unit, days, from }`: `unit` is `day`, `week`, `month` or `year`; `every` is 1–99; `days` (weekly only, `0` = Sunday) defaults to the due date's weekday; `from` is `due` or `done`. A repeating task always has a `dueDate` (today is filled in if missing). Completed copies carry `seriesId`, the id of the repeating task they came from.
 - Block `start`/`end` are `HH:MM` (24-hour, end after start, same day). `days` are weekdays with `0` = Sunday … `6` = Saturday; when `date` is set the block happens once on that day and `days` is ignored.
 - Block reminders: `notify: false` mutes the block; `remindMinutes` is the block's own lead in minutes (0–1440) and `null` means "use the default from settings".
 - Imports are validated and cleaned: unknown fields are dropped, bad values fall back to defaults, and references to missing categories or tasks are cleared. Hand-edited files are fine.

@@ -681,6 +681,14 @@ button.cat-name:hover { color: var(--accent); text-decoration: underline; }
 }
 .focus-banner .link-btn { margin-left: auto; }
 .field-hint { margin-top: -6px; }
+.repeat-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.repeat-every { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text-2); }
+.repeat-row input[type="number"] { width: 72px; }
+.repeat-row select { flex: 1 1 160px; width: auto; }
+.repeat-from { margin-top: 10px; }
+.repeat-from select { width: auto; max-width: 100%; }
+#taskRepeatHint { margin-top: 6px; }
+.repeat-tag { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 
 /* ---------- Toolbar ---------- */
 

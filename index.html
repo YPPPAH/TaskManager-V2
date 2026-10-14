@@ -167,10 +167,10 @@
       </div>
 
       <form class="quick-add" id="quickAddForm" autocomplete="off">
-        <input id="quickAddInput" type="text" maxlength="300" placeholder="Add a task…  e.g. Pay rent #Home !high @tomorrow" aria-label="Quick add task">
+        <input id="quickAddInput" type="text" maxlength="300" placeholder="Add a task…  e.g. Pay rent #Home !high @tomorrow every month" aria-label="Quick add task">
         <button class="btn btn-primary" type="submit">Add</button>
       </form>
-      <p class="hint quick-hint">Tip: type <code>#Category</code>, <code>!low</code> / <code>!high</code> / <code>!urgent</code> and <code>@today</code>, <code>@tomorrow</code>, <code>@fri</code> or <code>@2026-12-31</code> to fill in details as you add.</p>
+      <p class="hint quick-hint">Tip: type <code>#Category</code>, <code>!low</code> / <code>!high</code> / <code>!urgent</code>, <code>@today</code>, <code>@tomorrow</code>, <code>@fri</code> or <code>@2026-12-31</code>, and <code>every day</code>, <code>every 2 weeks</code> or <code>every mon, thu</code> to fill in details as you add.</p>
 
       <ul class="task-list" id="taskList"></ul>
       <div class="empty" id="emptyState" hidden></div>
@@ -212,6 +212,31 @@
         <button type="button" class="chip-btn" data-quick-date="7">In a week</button>
         <button type="button" class="chip-btn" data-quick-date="clear">No date</button>
       </div>
+
+      <fieldset class="field">
+        <legend>Repeat</legend>
+        <div class="repeat-row">
+          <span class="repeat-every" id="taskRepeatEveryWrap" hidden>Every <input id="taskRepeatEvery" type="number" min="1" max="99" value="1" aria-label="Every how many"></span>
+          <select id="taskRepeatUnit" aria-label="Repeat">
+            <option value="">Does not repeat</option>
+            <option value="day">Daily</option>
+            <option value="week">Weekly</option>
+            <option value="month">Monthly</option>
+            <option value="year">Yearly</option>
+          </select>
+        </div>
+        <div class="day-chips" id="taskRepeatDays" role="group" aria-label="Weekdays" hidden></div>
+        <div id="taskRepeatOptions" hidden>
+          <label class="control repeat-from">
+            <span>Next date counts from</span>
+            <select id="taskRepeatFrom">
+              <option value="due">the due date</option>
+              <option value="done">the day I complete it</option>
+            </select>
+          </label>
+          <p class="hint" id="taskRepeatHint"></p>
+        </div>
+      </fieldset>
 
       <fieldset class="field">
         <legend>Priority</legend>
@@ -391,10 +416,11 @@
         <dt><code>@mon</code> … <code>@sun</code></dt><dd>Next occurrence of that weekday</dd>
         <dt><code>@+3</code></dt><dd>Due in 3 days</dd>
         <dt><code>@2026-12-31</code></dt><dd>Exact date</dd>
+        <dt><code>every day</code> <code>every 2 weeks</code> <code>every mon, thu</code> <code>monthly</code></dt><dd>Make the task repeat</dd>
       </dl>
 
       <h3 class="dialog-subhead">Tasks</h3>
-      <p class="dialog-text">Click a task's flag to cycle its priority. Click the title to edit. Deleting can be undone from the toast for a few seconds.</p>
+      <p class="dialog-text">Click a task's flag to cycle its priority. Click the title to edit. Deleting can be undone from the toast for a few seconds. A repeating task is never "finished": ticking it off files a completed copy and moves the task to its next date.</p>
 
       <h3 class="dialog-subhead">Schedule</h3>
       <p class="dialog-text">Time blocks repeat weekly on the days you pick, or happen once on a date. Link a task to a block to plan when you will work on it — the task is only completed when you tick it off. Reminders fire before a block starts or ends — each block can have its own lead time or be muted — but only while this page is open.</p>
