@@ -55,7 +55,7 @@ There are no dependencies and nothing to install.
 - Each block has a title, start and end time, a colour and optional notes.
 - A block either **repeats every week** on the weekdays you pick (e.g. Homework, Mon–Thu 15:00–20:00) or happens **once on a date**.
 - Blocks on the same day can't overlap — you get a clear message naming the clash.
-- Optionally give a block a **category**. Switch **Schedule → Tasks** (the switch or `T`) while such a block is running and Tasks shows **only that category** — a banner says so, and *Show everything again* restores exactly the category switches you had before. Flipping any category switch yourself also ends the focus.
+- Optionally give a block a **category** — the "Work on a task" list then only offers open tasks from that category (and picking a task first fills in its category). Switch **Schedule → Tasks** (the switch or `T`) while such a block is running and Tasks shows **only that category** — a banner says so, and *Show everything again* restores exactly the category switches you had before. Flipping any category switch yourself also ends the focus.
 - Optionally **link a task** to a block ("work on …"). Linking never completes the task: it's only completed when you tick it off in Tasks. The *Now* card offers a "Mark done" shortcut and a link to open the task. From a task's editor, "Schedule time" creates a block for it.
 
 **Day view**

@@ -1532,8 +1532,8 @@
     renderDayChips(el.blockDaysWrap, b ? b.days : (d.days || [weekdayOf(ui.scheduleDate)]));
     el.blockDate.value = b && b.date ? b.date : (d.date || ui.scheduleDate);
     updateRepeatUI();
-    fillTaskSelect(b ? b.taskId : (d.taskId || null));
     fillCategorySelect(el.blockCategory, b ? b.categoryId : (d.categoryId || null));
+    fillTaskSelect(b ? b.taskId : (d.taskId || null), el.blockCategory.value || null);
     renderSwatches(el.blockColors, b ? b.color : (d.color || CATEGORY_COLORS[(data.blocks.length + 2) % CATEGORY_COLORS.length]));
     el.blockNotes.value = b ? b.notes : '';
     fillRemindSelect(b);
@@ -1562,13 +1562,19 @@
     el.blockRemind.innerHTML = opts.map(o => `<option value="${o[0]}" ${o[0] === value ? 'selected' : ''}>${escapeHtml(o[1])}</option>`).join('');
   }
 
-  function fillTaskSelect(selectedId) {
-    const tasks = data.tasks.filter(t => !t.completed || t.id === selectedId).sort(compareTasks);
-    el.blockTask.innerHTML = ['<option value="">No task</option>'].concat(tasks.map(t => {
-      const c = getCategory(t.categoryId);
+  /** Open tasks to link to a block — only those in `categoryId` when the block has a category. The linked task is always kept. */
+  function fillTaskSelect(selectedId, categoryId) {
+    const cat = categoryId ? getCategory(categoryId) : null;
+    const tasks = data.tasks
+      .filter(t => t.id === selectedId || (!t.completed && (!cat || t.categoryId === cat.id)))
+      .sort(compareTasks);
+    const options = tasks.map(t => {
+      const c = cat ? null : getCategory(t.categoryId);
       const label = (t.completed ? '✓ ' : '') + truncate(t.title, 60) + (c ? ` (${c.name})` : '');
       return `<option value="${t.id}" ${t.id === selectedId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-    })).join('');
+    });
+    if (cat && !tasks.length) options.push(`<option value="" disabled>No open tasks in ${escapeHtml(cat.name)}</option>`);
+    el.blockTask.innerHTML = ['<option value="">No task</option>'].concat(options).join('');
   }
 
   function onBlockFormSubmit(e) {
@@ -2200,8 +2206,11 @@
     });
     el.blockCategory.addEventListener('change', () => {
       // A category tints the block with its colour (the colour can still be changed afterwards)
+      // and narrows the task list to that category; a linked task from another category is dropped.
       const c = getCategory(el.blockCategory.value);
       if (c) selectSwatch(el.blockColors, c.color);
+      const t = getTask(el.blockTask.value);
+      fillTaskSelect(t && (!c || t.categoryId === c.id) ? t.id : null, c ? c.id : null);
     });
     el.blockTask.addEventListener('change', () => {
       // Picking a task fills in its category when none is chosen yet
@@ -2210,6 +2219,7 @@
       el.blockCategory.value = t.categoryId;
       const c = getCategory(t.categoryId);
       if (c) selectSwatch(el.blockColors, c.color);
+      fillTaskSelect(t.id, t.categoryId);
     });
     el.blockDeleteBtn.addEventListener('click', () => {
       const id = ui.editingBlockId;
