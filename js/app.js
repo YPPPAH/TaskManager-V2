@@ -21,6 +21,7 @@
   };
   const PRIORITY_ORDER = ['low', 'normal', 'high', 'urgent'];
   const REPEAT_UNITS = ['day', 'week', 'month', 'year'];
+  const PLAN_STATUSES = ['open', 'done', 'skipped'];
   const REPEAT_MAX_EVERY = 99;
 
   const CATEGORY_COLORS = [
@@ -55,6 +56,9 @@
     showCompleted: false,     // include completed tasks in All / Today / Upcoming
     showUncategorized: true,  // toggle for tasks without a category
     mode: 'tasks',            // 'tasks' | 'schedule'
+    layout: 'list',           // Tasks: 'list' or 'calendar'
+    calendarRange: 'month',   // calendar layout: 'month' or 'week'
+    dayEnd: '21:00',          // when the end-of-day review asks about today's planned tasks
     remindMinutes: 10,        // schedule reminders fire this many minutes before a block starts / ends
     reminderSound: true,      // also play a short sound with each reminder
     focus: null,              // Tasks narrowed to one category by the running block: { categoryId, blockId, snapshot }
@@ -79,6 +83,7 @@
     'bell-off':     '<path d="M13.73 21a2 2 0 0 1-3.46 0M18.63 13A17.9 17.9 0 0 1 18 8M6.26 6.26A6 6 0 0 0 6 8c0 7-3 9-3 9h14M18 8a6 6 0 0 0-9.33-5M2 2l20 20"/>',
     'chevron-left': '<path d="m15 18-6-6 6-6"/>',
     'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+    'list':         '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',
     'repeat':       '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
   };
 
@@ -92,7 +97,7 @@
   const el = {};
   document.querySelectorAll('[id]').forEach(node => { el[node.id] = node; });
 
-  let data = loadData(); // { version, categories, tasks, blocks, settings }
+  let data = loadData(); // { version, categories, tasks, blocks, plans, settings }
 
   const ui = {
     today: todayStr(),
@@ -102,6 +107,8 @@
     pendingImport: null,
     editingBlockId: null,
     scheduleDate: todayStr(), // the day shown in the schedule view
+    calendarDate: todayStr(), // the month / week shown in the calendar layout
+    planDate: null,           // the day the "Work on a task" dialog adds to
     fired: loadFired(),       // reminder keys already delivered today
   };
 
@@ -209,7 +216,7 @@
 
   /** Turns anything (saved data, an imported file, nothing) into a valid data object. */
   function normalizeData(raw) {
-    const out = { version: SCHEMA_VERSION, categories: [], tasks: [], blocks: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
+    const out = { version: SCHEMA_VERSION, categories: [], tasks: [], blocks: [], plans: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
     if (!raw || typeof raw !== 'object') return out;
 
     const catIds = new Set();
@@ -233,8 +240,31 @@
         if (block && !blockIds.has(block.id)) { blockIds.add(block.id); out.blocks.push(block); }
       }
     }
+    const planKeys = new Set();
+    if (Array.isArray(raw.plans)) {
+      for (const p of raw.plans) {
+        const plan = normalizePlan(p, taskIds);
+        if (!plan || planKeys.has(plan.id) || planKeys.has(plan.date + '|' + plan.taskId)) continue;
+        planKeys.add(plan.id); planKeys.add(plan.date + '|' + plan.taskId);
+        out.plans.push(plan);
+      }
+    }
     if (raw.settings && typeof raw.settings === 'object') out.settings = normalizeSettings(raw.settings);
     return out;
+  }
+
+  /** A day plan: "work on task X on day Y" (no time), reviewed at the end of that day. */
+  function normalizePlan(p, taskIds) {
+    if (!p || typeof p !== 'object' || !isDateStr(p.date) || typeof p.taskId !== 'string' || !taskIds.has(p.taskId)) return null;
+    const created = isoOr(p.createdAt, nowIso());
+    return {
+      id: normalizeId(p.id, 'p'),
+      date: p.date,
+      taskId: p.taskId,
+      status: PLAN_STATUSES.includes(p.status) ? p.status : 'open', // open → done / skipped at the review
+      createdAt: created,
+      updatedAt: isoOr(p.updatedAt, created),
+    };
   }
 
   function normalizeId(v, prefix) {
@@ -334,6 +364,9 @@
     if (typeof s.showUncategorized === 'boolean') out.showUncategorized = s.showUncategorized;
     if (MODES.includes(s.mode)) out.mode = s.mode;
     if (REMIND_OPTIONS.includes(s.remindMinutes)) out.remindMinutes = s.remindMinutes;
+    if (s.layout === 'list' || s.layout === 'calendar') out.layout = s.layout;
+    if (s.calendarRange === 'month' || s.calendarRange === 'week') out.calendarRange = s.calendarRange;
+    if (isHm(s.dayEnd)) out.dayEnd = s.dayEnd;
     if (typeof s.reminderSound === 'boolean') out.reminderSound = s.reminderSound;
     if (s.focus && typeof s.focus === 'object' && typeof s.focus.categoryId === 'string') {
       const snap = s.focus.snapshot && typeof s.focus.snapshot === 'object' ? s.focus.snapshot : {};
@@ -604,6 +637,7 @@
     renderList();
     renderSchedule();
     renderReminderSettings();
+    if (el.reviewDialog.open) renderReview();
   }
 
   function renderMode() {
@@ -657,7 +691,8 @@
         <span class="count" title="Active tasks">${counts.perCategory[c.id] || 0}</span>
       </li>`);
 
-    if (data.categories.length || counts.uncategorized) {
+    const anyUncategorized = data.tasks.some(t => !t.categoryId || !getCategory(t.categoryId));
+    if (anyUncategorized) {
       const on = data.settings.showUncategorized;
       rows.push(`
       <li class="category-item muted-item ${on ? '' : 'off'}">
@@ -694,14 +729,133 @@
     el.priorityFilter.value = s.priorityFilter;
     el.showCompleted.checked = s.showCompleted;
     el.showCompletedWrap.hidden = s.view === 'completed' || s.view === 'overdue';
+    el.sortWrap.hidden = s.layout === 'calendar';
+    el.layoutSwitch.innerHTML = [['list', 'List', 'list'], ['calendar', 'Calendar', 'calendar']].map(l => `
+      <button type="button" class="layout-btn ${s.layout === l[0] ? 'active' : ''}" data-layout="${l[0]}" aria-pressed="${s.layout === l[0]}" title="${l[1]} layout (C)">${icon(l[2], 15)}<span>${l[1]}</span></button>`).join('');
     renderFocusBanner();
   }
 
   function renderList() {
+    const calendar = data.settings.layout === 'calendar';
+    el.calendarPanel.hidden = !calendar;
+    el.taskList.hidden = calendar;
+    if (calendar) {
+      el.viewTitle.innerHTML = 'Calendar';
+      el.emptyState.hidden = true;
+      el.taskList.innerHTML = '';
+      renderCalendar();
+      return;
+    }
     const tasks = visibleTasks();
     el.viewTitle.innerHTML = `${escapeHtml(VIEWS[data.settings.view].label)} <span class="muted">${tasks.length}</span>`;
     el.taskList.innerHTML = tasks.map(taskRowHtml).join('');
     renderEmptyState(tasks.length);
+  }
+
+  // ---------- Calendar layout ----------
+
+  /** Tasks with a due date that pass the sidebar filters (category switches, priority, search, show completed); the view is ignored. */
+  function calendarTasks() {
+    const showDone = data.settings.showCompleted;
+    return data.tasks.filter(t => t.dueDate && (!t.completed || showDone) && categoryVisible(t) && matchesPriority(t) && matchesSearch(t));
+  }
+
+  function calItemHtml(t, date, isPlan) {
+    const c = getCategory(t.categoryId);
+    const cls = ['cal-item', t.completed ? 'done' : '', !t.completed && !isPlan && date < ui.today ? 'overdue' : '', isPlan ? 'plan' : ''].join(' ');
+    const title = t.title + (c ? ' · ' + c.name : '') + (isPlan ? ' · planned for this day' : '') + (t.completed ? ' · done' : '');
+    return `<button type="button" class="${cls}" style="--cat:${c ? c.color : 'var(--border-strong)'}" data-task-open="${t.id}" title="${escapeHtml(title)}">${escapeHtml(t.title)}</button>`;
+  }
+
+  function renderCalendar() {
+    const range = data.settings.calendarRange;
+    const a = parseDateStr(ui.calendarDate);
+    const today = parseDateStr(ui.today);
+    let start, end, label, isCurrent;
+    if (range === 'week') {
+      start = startOfWeek(ui.calendarDate);
+      end = addDays(start, 6);
+      const s = parseDateStr(start), e = parseDateStr(end);
+      label = s.getMonth() === e.getMonth()
+        ? `${s.getDate()} – ${e.getDate()} ${s.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`
+        : `${s.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} – ${e.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`;
+      isCurrent = start === startOfWeek(ui.today);
+    } else {
+      const first = toDateStr(new Date(a.getFullYear(), a.getMonth(), 1));
+      const last = toDateStr(new Date(a.getFullYear(), a.getMonth() + 1, 0));
+      start = startOfWeek(first);
+      end = addDays(startOfWeek(last), 6);
+      label = a.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+      isCurrent = a.getMonth() === today.getMonth() && a.getFullYear() === today.getFullYear();
+    }
+
+    const byDate = {};
+    calendarTasks().forEach(t => { (byDate[t.dueDate] = byDate[t.dueDate] || []).push(t); });
+    Object.keys(byDate).forEach(k => byDate[k].sort(compareTasks));
+    const planned = {};
+    data.plans.forEach(p => {
+      const t = getTask(p.taskId);
+      if (!t || p.status === 'skipped' || t.dueDate === p.date || !categoryVisible(t) || !matchesPriority(t) || !matchesSearch(t)) return;
+      if (t.completed && !data.settings.showCompleted) return;
+      (planned[p.date] = planned[p.date] || []).push(t);
+    });
+
+    const maxItems = range === 'week' ? Infinity : 4;
+    const cells = [];
+    for (let d = start; d <= end; d = addDays(d, 1)) {
+      const date = parseDateStr(d);
+      const inMonth = range === 'week' || date.getMonth() === a.getMonth();
+      const items = (byDate[d] || []).map(t => calItemHtml(t, d, false)).concat((planned[d] || []).map(t => calItemHtml(t, d, true)));
+      const shown = items.length > maxItems ? items.slice(0, maxItems - 1) : items;
+      const more = items.length - shown.length;
+      const cls = ['cal-day', inMonth ? '' : 'outside', d === ui.today ? 'today' : '', d < ui.today ? 'past' : ''].join(' ');
+      const long = date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+      cells.push(`
+        <div class="${cls}" data-date="${d}" role="gridcell" aria-label="${escapeHtml(long)}">
+          <div class="cal-day-head">
+            <button type="button" class="cal-num" data-cal-day="${d}" title="Show this week">${date.getDate()}${range === 'week' || date.getDate() === 1 ? `<span class="cal-month">${escapeHtml(date.toLocaleDateString(undefined, { month: 'short' }))}</span>` : ''}</button>
+            <button type="button" class="icon-btn sm cal-add" data-cal-add="${d}" title="New task due ${escapeHtml(long)}" aria-label="New task due ${escapeHtml(long)}">${icon('plus', 14)}</button>
+          </div>
+          <div class="cal-items">${shown.join('')}${more ? `<button type="button" class="cal-more" data-cal-day="${d}">+${more} more</button>` : ''}</div>
+        </div>`);
+    }
+    const head = [1, 2, 3, 4, 5, 6, 0].map(d => `<div class="cal-weekday" role="columnheader">${WEEKDAY_SHORT[d]}</div>`).join('');
+    el.calendarPanel.innerHTML = `
+      <div class="cal-nav">
+        <button type="button" class="icon-btn" data-cal="-1" aria-label="Previous ${range}">${icon('chevron-left', 18)}</button>
+        <button type="button" class="icon-btn" data-cal="1" aria-label="Next ${range}">${icon('chevron-right', 18)}</button>
+        <h3 class="cal-label">${escapeHtml(label)}</h3>
+        <button type="button" class="btn btn-ghost" data-cal="today" ${isCurrent ? 'hidden' : ''}>Today</button>
+        <div class="range-switch" role="group" aria-label="Range">
+          <button type="button" class="${range === 'month' ? 'active' : ''}" data-cal-range="month" aria-pressed="${range === 'month'}">Month</button>
+          <button type="button" class="${range === 'week' ? 'active' : ''}" data-cal-range="week" aria-pressed="${range === 'week'}">Week</button>
+        </div>
+      </div>
+      <div class="cal-grid ${range}" role="grid">${head}${cells.join('')}</div>
+      <p class="hint">Tasks sit on their due date; a dashed outline marks a task on that day’s “To work on” list. Category switches, the priority filter, search and “Show completed” apply here; the sidebar views don’t. Click an empty part of a day to add a task due then.</p>`;
+  }
+
+  function onCalendarClick(e) {
+    const open = e.target.closest('[data-task-open]');
+    if (open) { openTaskDialog(open.dataset.taskOpen); return; }
+    const add = e.target.closest('[data-cal-add]');
+    if (add) { openTaskDialog(null, { dueDate: add.dataset.calAdd }); return; }
+    const day = e.target.closest('[data-cal-day]');
+    if (day) { ui.calendarDate = day.dataset.calDay; updateSettings({ calendarRange: 'week' }); return; }
+    const rng = e.target.closest('[data-cal-range]');
+    if (rng) { updateSettings({ calendarRange: rng.dataset.calRange }); return; }
+    const nav = e.target.closest('[data-cal]');
+    if (nav) {
+      const v = nav.dataset.cal;
+      if (v === 'today') ui.calendarDate = ui.today;
+      else if (data.settings.calendarRange === 'week') ui.calendarDate = addDays(ui.calendarDate, 7 * +v);
+      else ui.calendarDate = addMonthsClamped(ui.calendarDate.slice(0, 8) + '01', +v);
+      renderCalendar();
+      return;
+    }
+    const cell = e.target.closest('.cal-day');
+    const blank = cell && (e.target === cell || e.target.classList.contains('cal-items'));
+    if (blank) openTaskDialog(null, { dueDate: cell.dataset.date });
   }
 
   function taskRowHtml(t) {
@@ -712,6 +866,7 @@
     const meta = [];
     if (cat) meta.push(`<span class="cat-chip" style="--cat:${cat.color}">${escapeHtml(cat.name)}</span>`);
     if (due) meta.push(`<span class="due ${due.cls}" title="Due ${escapeHtml(due.title)}">${icon('calendar', 13)}${escapeHtml(due.label)}</span>`);
+    if (!t.completed && plannedToday(t.id)) meta.push(`<span class="plan-tag" title="On today’s “To work on” list in the Schedule">${icon('today', 13)}today’s plan</span>`);
     if (t.repeat) meta.push(`<span class="repeat-tag" title="Repeats ${escapeHtml(repeatLabel(t.repeat).toLowerCase())}${t.repeat.from === 'done' ? ', counted from the day you complete it' : ''}">${icon('repeat', 13)}${escapeHtml(repeatLabel(t.repeat))}</span>`);
     else if (t.seriesId) meta.push(`<span class="repeat-tag" title="A completed round of a repeating task">${icon('repeat', 13)}repeating</span>`);
     if (t.notes) meta.push(`<span class="notes-preview">${escapeHtml(t.notes)}</span>`);
@@ -788,7 +943,7 @@
 
   function setView(key) {
     if (!VIEW_KEYS.includes(key)) return;
-    updateSettings({ view: key, mode: 'tasks' });
+    updateSettings({ view: key, mode: 'tasks', layout: 'list' });
   }
 
   /** opts.focus: when moving Schedule → Tasks, narrow Tasks to the running block's category (see focusForCurrentBlock). */
@@ -937,6 +1092,7 @@
     t.completed = !t.completed;
     t.completedAt = t.completed ? nowIso() : null;
     t.updatedAt = nowIso();
+    if (t.completed) settlePlans(t.id);
     commit();
     if (t.completed && !isVisibleNow(id)) {
       toast(`Completed “${truncate(t.title)}”`, { action: 'Undo', onAction: () => toggleComplete(id) });
@@ -953,6 +1109,7 @@
     data.tasks.push(record);
     t.dueDate = next;
     t.updatedAt = now;
+    settlePlans(t.id);
     commit();
     toast(`Done — “${truncate(t.title)}” comes back ${formatDueWord(next)}`, {
       action: 'Undo',
@@ -964,6 +1121,194 @@
         commit();
       },
     });
+  }
+
+  // ---------- Day plans ("to work on" lists) ----------
+
+  function getPlan(id) { return data.plans.find(p => p.id === id) || null; }
+
+  function plansForDate(date) {
+    return data.plans
+      .filter(p => p.date === date && getTask(p.taskId))
+      .sort((a, b) => compareTasks(getTask(a.taskId), getTask(b.taskId)));
+  }
+
+  function plannedToday(taskId) {
+    return data.plans.some(p => p.taskId === taskId && p.date === ui.today && p.status === 'open');
+  }
+
+  function dayEnded(date) {
+    return date < ui.today || (date === ui.today && nowMinutes() >= hmToMin(data.settings.dayEnd));
+  }
+
+  /** Open plans for days that are over — what the end-of-day review asks about. */
+  function plansToReview() {
+    return data.plans
+      .filter(p => p.status === 'open' && getTask(p.taskId) && dayEnded(p.date))
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : compareTasks(getTask(a.taskId), getTask(b.taskId))));
+  }
+
+  /** Completing a task counts as "done" for its open plans up to today. */
+  function settlePlans(taskId) {
+    data.plans.forEach(p => {
+      if (p.taskId === taskId && p.status === 'open' && p.date <= ui.today) { p.status = 'done'; p.updatedAt = nowIso(); }
+    });
+  }
+
+  function addPlan(date, taskId) {
+    if (!isDateStr(date) || !getTask(taskId)) return null;
+    const existing = data.plans.find(p => p.date === date && p.taskId === taskId);
+    if (existing) {
+      if (existing.status !== 'open') { existing.status = 'open'; existing.updatedAt = nowIso(); commit(); }
+      return existing;
+    }
+    const now = nowIso();
+    const p = { id: uid('p'), date, taskId, status: 'open', createdAt: now, updatedAt: now };
+    data.plans.push(p);
+    commit();
+    return p;
+  }
+
+  function setPlanStatus(id, status) {
+    const p = getPlan(id);
+    if (!p || !PLAN_STATUSES.includes(status)) return;
+    p.status = status;
+    p.updatedAt = nowIso();
+    const t = getTask(p.taskId);
+    if (status === 'done' && t && !t.completed) { toggleComplete(t.id); return; } // commits; repeating tasks roll over
+    commit();
+  }
+
+  function movePlanToToday(id) {
+    const p = getPlan(id);
+    if (!p) return;
+    if (data.plans.some(x => x.id !== id && x.date === ui.today && x.taskId === p.taskId)) { removePlan(id); return; }
+    p.date = ui.today;
+    p.status = 'open';
+    p.updatedAt = nowIso();
+    commit();
+  }
+
+  function removePlan(id) {
+    const idx = data.plans.findIndex(p => p.id === id);
+    if (idx < 0) return;
+    data.plans.splice(idx, 1);
+    commit();
+  }
+
+  function handlePlanAction(action, planId) {
+    switch (action) {
+      case 'add':    openPlanDialog(ui.scheduleDate); break;
+      case 'review': openReview(); break;
+      case 'done':   if (planId) setPlanStatus(planId, 'done'); break;
+      case 'skip':   if (planId) setPlanStatus(planId, 'skipped'); break;
+      case 'reopen': if (planId) setPlanStatus(planId, 'open'); break;
+      case 'move':   if (planId) movePlanToToday(planId); break;
+      case 'remove': if (planId) removePlan(planId); break;
+    }
+  }
+
+  function openPlanDialog(date) {
+    ui.planDate = date;
+    const taken = new Set(plansForDate(date).filter(p => p.status === 'open').map(p => p.taskId));
+    const tasks = data.tasks.filter(t => !t.completed && !taken.has(t.id)).sort(compareTasks);
+    el.planIntro.textContent = `Pick a task to work on ${date === ui.today ? 'today' : 'on ' + parseDateStr(date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}. It keeps its own due date.`;
+    el.planTask.innerHTML = ['<option value="">Choose a task…</option>'].concat(tasks.map(t => {
+      const c = getCategory(t.categoryId);
+      return `<option value="${t.id}">${escapeHtml(truncate(t.title, 60) + (c ? ` (${c.name})` : ''))}</option>`;
+    })).join('') + (tasks.length ? '' : '<option value="" disabled>No open tasks left to add</option>');
+    el.planNewTitle.value = '';
+    el.planDialog.showModal();
+    (tasks.length ? el.planTask : el.planNewTitle).focus();
+  }
+
+  function onPlanFormSubmit(e) {
+    e.preventDefault();
+    const date = ui.planDate;
+    if (!date) { el.planDialog.close(); return; }
+    const title = el.planNewTitle.value.trim();
+    let taskId = el.planTask.value;
+    if (title) {
+      const t = addTask({ title, notes: '', categoryId: defaultCategoryId(), priority: 'normal', dueDate: null });
+      taskId = t ? t.id : '';
+    }
+    if (!taskId) { el.planTask.reportValidity(); toast('Choose a task, or type a title for a new one.', { type: 'error' }); return; }
+    el.planDialog.close();
+    if (addPlan(date, taskId)) toast(`Added to ${date === ui.today ? 'today' : formatShortDate(date)}`);
+  }
+
+  function openReview() {
+    renderReview();
+    if (!el.reviewDialog.open) el.reviewDialog.showModal();
+  }
+
+  function renderReview() {
+    const due = plansToReview();
+    if (!due.length) {
+      el.reviewIntro.textContent = 'Nothing left to review — every planned task has been ticked off or marked as not done.';
+      el.reviewList.innerHTML = '';
+      return;
+    }
+    el.reviewIntro.textContent = `You planned ${plural(due.length, 'task')}. Mark each one done, move it to today, or let it go.`;
+    const groups = [];
+    due.forEach(p => {
+      const g = groups.length && groups[groups.length - 1].date === p.date ? groups[groups.length - 1] : (groups.push({ date: p.date, plans: [] }), groups[groups.length - 1]);
+      g.plans.push(p);
+    });
+    el.reviewList.innerHTML = groups.map(g => `
+      <div class="review-date">${g.date === ui.today ? 'Today' : g.date === addDays(ui.today, -1) ? 'Yesterday' : escapeHtml(parseDateStr(g.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}</div>
+      ${g.plans.map(p => `
+        <div class="review-item" data-plan-id="${p.id}">
+          ${taskChipHtml(getTask(p.taskId))}
+          <div class="review-actions">
+            <button type="button" class="btn btn-primary sm" data-plan-action="done">Done</button>
+            ${p.date < ui.today ? '<button type="button" class="btn btn-ghost sm" data-plan-action="move">Move to today</button>' : ''}
+            <button type="button" class="btn btn-ghost sm" data-plan-action="skip">Not done</button>
+          </div>
+        </div>`).join('')}`).join('');
+  }
+
+  function reviewCardHtml() {
+    const due = plansToReview();
+    if (!due.length) return '';
+    const dates = Array.from(new Set(due.map(p => p.date)));
+    const when = dates.length > 1 ? `over ${dates.length} days`
+      : dates[0] === ui.today ? 'today'
+      : dates[0] === addDays(ui.today, -1) ? 'yesterday'
+      : 'on ' + formatShortDate(dates[0]);
+    return `
+      <section class="review-card" aria-label="Day review">
+        <div><strong>How did it go?</strong> You planned ${plural(due.length, 'task')} ${when}. Tick off what got done.</div>
+        <button type="button" class="btn btn-primary" data-plan-action="review">Review</button>
+      </section>`;
+  }
+
+  function planSectionHtml(date) {
+    const plans = plansForDate(date);
+    const items = plans.map(p => {
+      const st = p.status;
+      return `
+        <li class="plan-item ${st}" data-plan-id="${p.id}">
+          <button type="button" class="check" data-plan-action="${st === 'done' ? 'reopen' : 'done'}" role="checkbox" aria-checked="${st === 'done'}" aria-label="${st === 'done' ? 'Mark as not done' : 'Mark as done'}">${icon('check', 14)}</button>
+          <div class="plan-body">${taskChipHtml(getTask(p.taskId))}${st === 'done' ? '<span class="plan-status ok">done</span>' : st === 'skipped' ? '<span class="plan-status">not done</span>' : ''}</div>
+          <div class="task-actions">
+            ${st === 'open' && date < ui.today ? '<button type="button" class="btn btn-ghost sm" data-plan-action="move">Move to today</button>' : ''}
+            ${st === 'open' ? '<button type="button" class="btn btn-ghost sm" data-plan-action="skip" title="Did not get to it">Not done</button>' : ''}
+            ${st === 'skipped' ? '<button type="button" class="btn btn-ghost sm" data-plan-action="reopen">Reopen</button>' : ''}
+            <button type="button" class="icon-btn sm danger" data-plan-action="remove" title="Remove from this day" aria-label="Remove from this day">${icon('x', 15)}</button>
+          </div>
+        </li>`;
+    }).join('');
+    return `
+      <section class="plan-section" aria-label="Tasks to work on">
+        <div class="plan-head">
+          <h3 class="day-title">To work on${plans.length ? ` <span class="muted">· ${plans.length}</span>` : ''}</h3>
+          <button type="button" class="btn btn-ghost" data-plan-action="add">${icon('plus', 15)}<span>Add a task</span></button>
+        </div>
+        ${plans.length
+          ? `<ul class="plan-list">${items}</ul>`
+          : `<p class="hint">Pick tasks to get to this day without fixing a time. At ${escapeHtml(fmtTime(hmToMin(data.settings.dayEnd)))} the app asks how it went.</p>`}
+      </section>`;
   }
 
   function formatDueWord(dateStr) {
@@ -985,12 +1330,15 @@
     const idx = data.tasks.findIndex(t => t.id === id);
     if (idx < 0) return;
     const removed = data.tasks.splice(idx, 1)[0];
+    const removedPlans = data.plans.filter(p => p.taskId === id);
+    data.plans = data.plans.filter(p => p.taskId !== id);
     commit();
     toast(`Deleted “${truncate(removed.title)}”`, {
       action: 'Undo',
       onAction: () => {
         if (getTask(removed.id)) return;
         data.tasks.splice(Math.min(idx, data.tasks.length), 0, removed);
+        data.plans = data.plans.concat(removedPlans);
         commit();
       },
     });
@@ -1301,6 +1649,7 @@
       categories: data.categories,
       tasks: data.tasks,
       blocks: data.blocks,
+      plans: data.plans,
     };
     downloadFile(`tasks-${ui.today}.json`, JSON.stringify(payload, null, 2), 'application/json');
     toast(`Exported ${plural(data.tasks.length, 'task')} as JSON`);
@@ -1349,7 +1698,7 @@
     const snapshot = JSON.parse(JSON.stringify(data));
     let summary;
     if (mode === 'replace') {
-      data = { version: SCHEMA_VERSION, categories: inc.categories, tasks: inc.tasks, blocks: inc.blocks, settings: Object.assign({}, data.settings, { focus: null }) };
+      data = { version: SCHEMA_VERSION, categories: inc.categories, tasks: inc.tasks, blocks: inc.blocks, plans: inc.plans, settings: Object.assign({}, data.settings, { focus: null }) };
       summary = `Replaced everything with ${plural(inc.tasks.length, 'task')}, ${plural(inc.categories.length, 'category', 'categories')} and ${plural(inc.blocks.length, 'time block')}`;
     } else {
       const r = mergeInto(data, inc);
@@ -1386,8 +1735,14 @@
       if (idx < 0) { target.blocks.push(b); r.blocks.added++; }
       else if (b.updatedAt > target.blocks[idx].updatedAt) { target.blocks[idx] = b; r.blocks.updated++; }
     }
+    for (const p of inc.plans) {
+      const idx = target.plans.findIndex(x => x.id === p.id || (x.date === p.date && x.taskId === p.taskId));
+      if (idx < 0) target.plans.push(p);
+      else if (p.updatedAt > target.plans[idx].updatedAt) target.plans[idx] = p;
+    }
     const ids = new Set(target.tasks.map(t => t.id));
     target.blocks.forEach(b => { if (b.taskId && !ids.has(b.taskId)) b.taskId = null; });
+    target.plans = target.plans.filter(p => ids.has(p.taskId));
     return r;
   }
 
@@ -1528,9 +1883,9 @@
     const start = b ? b.start : (d.start || suggestedStart());
     el.blockStart.value = start;
     el.blockEnd.value = b ? b.end : (d.end || minToHm(Math.min(hmToMin(start) + 60, 23 * 60 + 59)));
-    el.blockRepeat.checked = b ? !b.date : !d.date;
-    renderDayChips(el.blockDaysWrap, b ? b.days : (d.days || [weekdayOf(ui.scheduleDate)]));
+    el.blockRepeat.checked = b ? !b.date : !!d.days; // new blocks happen once, on the day being viewed
     el.blockDate.value = b && b.date ? b.date : (d.date || ui.scheduleDate);
+    renderDayChips(el.blockDaysWrap, b ? b.days : (d.days || [weekdayOf(el.blockDate.value)]));
     updateRepeatUI();
     fillCategorySelect(el.blockCategory, b ? b.categoryId : (d.categoryId || null));
     fillTaskSelect(b ? b.taskId : (d.taskId || null), el.blockCategory.value || null);
@@ -1653,6 +2008,7 @@
         </div>
         <button type="button" class="btn btn-primary" data-block-action="add">${icon('plus', 16)}<span>Add block</span></button>
       </div>
+      ${reviewCardHtml()}
       ${nowCardHtml(now)}
       <div class="week-nav">
         <button type="button" class="icon-btn" data-week="-1" aria-label="Previous week">${icon('chevron-left', 18)}</button>
@@ -1663,7 +2019,8 @@
       <h3 class="day-title">${escapeHtml(selLabel)}${isToday ? ' <span class="muted">· today</span>' : ''}</h3>
       ${timelineHtml(blocks, isToday ? now : null)}
       ${list}
-      <p class="hint schedule-foot">Blocks repeat weekly on the days you choose, or happen once on a date. Linking a task to a block does not complete it — tick it off in Tasks when it is really done.</p>`;
+      ${planSectionHtml(sel)}
+      <p class="hint schedule-foot">Blocks happen once on a date, or repeat weekly on the days you choose. Linking a task to a block does not complete it — tick it off in Tasks when it is really done.</p>`;
   }
 
   function dayTabsHtml(sel) {
@@ -1698,6 +2055,10 @@
   /** The task a block is linked to, as a clickable chip that opens the task. */
   function linkedTaskHtml(b) {
     const t = b.taskId ? getTask(b.taskId) : null;
+    return t ? taskChipHtml(t) : '';
+  }
+
+  function taskChipHtml(t) {
     if (!t) return '';
     const title = t.completed ? 'Done — open task' : `${PRIORITIES[t.priority].label} priority — open task`;
     return `<button type="button" class="task-link ${t.completed ? 'done' : ''}" style="--p:var(--p-${t.priority})" data-task-open="${t.id}" title="${escapeHtml(title)}">
@@ -1783,6 +2144,12 @@
   }
 
   function onSchedulePanelClick(e) {
+    const planEl = e.target.closest('[data-plan-action]');
+    if (planEl) {
+      const holder = planEl.closest('[data-plan-id]');
+      handlePlanAction(planEl.dataset.planAction, holder ? holder.dataset.planId : null);
+      return;
+    }
     const openTask = e.target.closest('[data-task-open]');
     if (openTask) { openTaskDialog(openTask.dataset.taskOpen); return; }
     const doneTask = e.target.closest('[data-task-done]');
@@ -1970,6 +2337,18 @@
       saveFired();
       deliverReminder(ev, ev.lead, key);
     }
+    // End of day: ask about today's "To work on" list, once
+    const endAt = hmToMin(data.settings.dayEnd);
+    if (now >= endAt && now < endAt + REMIND_TOLERANCE_MIN) {
+      const key = `${ui.today}|review`;
+      const open = data.plans.filter(p => p.date === ui.today && p.status === 'open' && getTask(p.taskId));
+      if (open.length && !ui.fired[key]) {
+        ui.fired[key] = Date.now();
+        saveFired();
+        showNotification('How did today go?', `You planned ${plural(open.length, 'task')}. Tick off what got done.`, key);
+        toast(`How did today go? You planned ${plural(open.length, 'task')}.`, { sticky: true, action: 'Review', onAction: openReview });
+      }
+    }
   }
 
   function sendTestReminder() {
@@ -1996,6 +2375,7 @@
     el.remindEnableBtn.hidden = state !== 'default';
     el.remindLead.value = String(data.settings.remindMinutes);
     el.remindSound.checked = data.settings.reminderSound;
+    el.dayEndInput.value = data.settings.dayEnd;
   }
 
   // ---------- Toasts ----------
@@ -2081,6 +2461,7 @@
         if (el.taskDialog.open) { e.preventDefault(); submitForm(el.taskForm); }
         else if (el.categoryDialog.open) { e.preventDefault(); submitForm(el.categoryForm); }
         else if (el.blockDialog.open) { e.preventDefault(); submitForm(el.blockForm); }
+        else if (el.planDialog.open) { e.preventDefault(); submitForm(el.planForm); }
       }
       return; // Escape closes dialogs natively
     }
@@ -2103,6 +2484,7 @@
       case '/':           e.preventDefault(); setMode('tasks'); el.searchInput.focus(); el.searchInput.select(); break;
       case 't': case 'T': e.preventDefault(); setMode('tasks', { focus: true }); break;
       case 's': case 'S': e.preventDefault(); setMode('schedule'); break;
+      case 'c': case 'C': e.preventDefault(); updateSettings({ mode: 'tasks', layout: data.settings.layout === 'calendar' && data.settings.mode === 'tasks' ? 'list' : 'calendar' }); break;
       case '?':           e.preventDefault(); el.helpDialog.showModal(); break;
     }
   }
@@ -2160,6 +2542,18 @@
     el.quickAddForm.addEventListener('submit', e => { e.preventDefault(); quickAdd(); });
     el.taskList.addEventListener('click', onTaskListClick);
     el.emptyState.addEventListener('click', onEmptyStateClick);
+    el.calendarPanel.addEventListener('click', onCalendarClick);
+    el.layoutSwitch.addEventListener('click', e => {
+      const b = e.target.closest('[data-layout]');
+      if (b) updateSettings({ layout: b.dataset.layout });
+    });
+    el.planForm.addEventListener('submit', onPlanFormSubmit);
+    el.reviewList.addEventListener('click', e => {
+      const b = e.target.closest('[data-plan-action]');
+      if (!b) return;
+      const holder = b.closest('[data-plan-id]');
+      handlePlanAction(b.dataset.planAction, holder ? holder.dataset.planId : null);
+    });
 
     // Task dialog
     el.taskForm.addEventListener('submit', onTaskFormSubmit);
@@ -2237,6 +2631,7 @@
     el.remindEnableBtn.addEventListener('click', () => requestNotificationPermission());
     el.remindLead.addEventListener('change', () => updateSettings({ remindMinutes: +el.remindLead.value }));
     el.remindSound.addEventListener('change', () => updateSettings({ reminderSound: el.remindSound.checked }));
+    el.dayEndInput.addEventListener('change', () => { if (isHm(el.dayEndInput.value)) updateSettings({ dayEnd: el.dayEndInput.value }); else el.dayEndInput.value = data.settings.dayEnd; });
     el.remindTestBtn.addEventListener('click', sendTestReminder);
 
     // Import / confirm dialogs
@@ -2282,6 +2677,10 @@
 
     // Schedule reminders, and keep the "Now" card live (unless the user is interacting with the panel)
     setInterval(checkReminders, 20 * 1000);
+    const toReview = plansToReview();
+    if (toReview.length) {
+      toast(`You planned ${plural(toReview.length, 'task')} for ${toReview.every(p => p.date === addDays(ui.today, -1)) ? 'yesterday' : 'earlier days'} — did they get done?`, { duration: 15000, action: 'Review', onAction: openReview });
+    }
     setInterval(() => {
       if (data.settings.mode === 'schedule' && !el.schedulePanel.contains(document.activeElement)) renderSchedule();
     }, 30 * 1000);

@@ -109,6 +109,10 @@
             <span class="switch-track"></span>
             <span>Play a sound</span>
           </label>
+          <label class="control">
+            <span>Day review at</span>
+            <input type="time" id="dayEndInput" aria-label="Time of the end-of-day review">
+          </label>
           <button class="btn btn-ghost btn-block" id="remindTestBtn" type="button">Send a test reminder</button>
         </div>
         <p class="hint">Reminders only fire while this page is open in a browser tab. Each block can use its own lead time — set it in the block editor.</p>
@@ -139,7 +143,8 @@
       <div class="toolbar">
         <h2 class="view-title" id="viewTitle">All tasks</h2>
         <div class="toolbar-controls">
-          <label class="control">
+          <div class="layout-switch" id="layoutSwitch" role="group" aria-label="Layout"></div>
+          <label class="control" id="sortWrap">
             <span>Sort</span>
             <select id="sortSelect">
               <option value="due">Due date</option>
@@ -174,6 +179,7 @@
 
       <ul class="task-list" id="taskList"></ul>
       <div class="empty" id="emptyState" hidden></div>
+      <div class="calendar" id="calendarPanel" hidden></div>
       </div>
 
       <section class="schedule" id="schedulePanel" aria-label="Schedule" hidden></section>
@@ -353,6 +359,40 @@
     </form>
   </dialog>
 
+  <!-- ===== Work on a task (day plan) ===== -->
+  <dialog id="planDialog" class="dialog dialog-sm" aria-labelledby="planDialogTitle">
+    <form id="planForm" class="dialog-form">
+      <h2 id="planDialogTitle">Work on a task</h2>
+      <p class="dialog-text" id="planIntro"></p>
+      <label class="field">
+        <span>Task</span>
+        <select id="planTask"></select>
+      </label>
+      <label class="field">
+        <span>…or a new task <em class="optional">optional</em></span>
+        <input id="planNewTitle" type="text" maxlength="200" autocomplete="off" placeholder="Type a title to create one">
+      </label>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Add to this day</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ===== End-of-day review ===== -->
+  <dialog id="reviewDialog" class="dialog" aria-labelledby="reviewDialogTitle">
+    <div class="dialog-form">
+      <h2 id="reviewDialogTitle">How did it go?</h2>
+      <p class="dialog-text" id="reviewIntro"></p>
+      <div class="review-list" id="reviewList"></div>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-primary" data-close>Done</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- ===== Import ===== -->
   <dialog id="importDialog" class="dialog dialog-sm" aria-labelledby="importDialogTitle">
     <form id="importForm" class="dialog-form">
@@ -405,6 +445,7 @@
         <dt><kbd>Esc</kbd></dt><dd>Clear search / close</dd>
         <dt><kbd>Ctrl</kbd> + <kbd>Enter</kbd></dt><dd>Save the task you're editing</dd>
         <dt><kbd>T</kbd> / <kbd>S</kbd></dt><dd>Switch between Tasks and Schedule</dd>
+        <dt><kbd>C</kbd></dt><dd>Toggle the calendar layout of Tasks</dd>
         <dt><kbd>?</kbd></dt><dd>This help</dd>
       </dl>
 
@@ -423,7 +464,7 @@
       <p class="dialog-text">Click a task's flag to cycle its priority. Click the title to edit. Deleting can be undone from the toast for a few seconds. A repeating task is never "finished": ticking it off files a completed copy and moves the task to its next date.</p>
 
       <h3 class="dialog-subhead">Schedule</h3>
-      <p class="dialog-text">Time blocks repeat weekly on the days you pick, or happen once on a date. Link a task to a block to plan when you will work on it — the task is only completed when you tick it off. Reminders fire before a block starts or ends — each block can have its own lead time or be muted — but only while this page is open.</p>
+      <p class="dialog-text">Each day has a "To work on" list: tasks you mean to get to that day without fixing a time. At the day-review time (sidebar) the app asks which of them got done. Time blocks happen once on a date, or repeat weekly on the days you pick. Link a task to a block to plan when you will work on it — the task is only completed when you tick it off. Reminders fire before a block starts or ends — each block can have its own lead time or be muted — but only while this page is open.</p>
 
       <div class="dialog-actions">
         <span class="spacer"></span>

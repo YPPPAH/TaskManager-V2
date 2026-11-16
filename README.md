@@ -24,6 +24,7 @@ There are no dependencies and nothing to install.
 - Title, notes, category, priority and due date.
 - **Repeating tasks**: daily, weekly (on the weekdays you pick), monthly or yearly, or every *N* of those. Ticking one off files a completed copy (so the *Completed* view and counter stay honest) and moves the task itself to its next date — never earlier than today, so an overdue repeat doesn't come straight back as overdue. The next date counts from the due date, or from the day you complete it (handy for "every 3 days" chores). Undo from the toast.
 - Quick-add bar with inline syntax: `Pay rent #Home !high @tomorrow every month`.
+- **Calendar layout** (the List / Calendar switch in the toolbar, or `C`): a month or week grid with every task on its due date — overdue ones in red, completed ones struck through when *Show completed* is on — plus a dashed entry for tasks on a day's "To work on" list. Click a task to edit it, a day's empty space (or its +) to add a task due that day, and a day number or "+N more" to zoom into that week. The sidebar views don't apply in the calendar; category switches, the priority filter and search do. Repeating tasks show only their current date.
 - Click the flag on a task to cycle its priority; click the title to edit.
 - Complete / un-complete, delete with **Undo**.
 - Search across titles, notes and category names.
@@ -31,7 +32,7 @@ There are no dependencies and nothing to install.
 
 **Categories**
 - Create as many as you like, each with a colour.
-- A **toggle switch per category** shows or hides its tasks (plus a toggle for tasks with no category). *All* / *None* buttons flip every switch at once.
+- A **toggle switch per category** shows or hides its tasks, plus a *No category* toggle that only appears while some task has no category. *All* / *None* buttons flip every switch at once.
 - When exactly one category is switched on, new tasks default to it.
 - Deleting a category keeps its tasks and moves them to "No category".
 
@@ -53,7 +54,12 @@ There are no dependencies and nothing to install.
 
 **Time blocks**
 - Each block has a title, start and end time, a colour and optional notes.
-- A block either **repeats every week** on the weekdays you pick (e.g. Homework, Mon–Thu 15:00–20:00) or happens **once on a date**.
+- A block happens **once on a date** (the default — the day you are looking at) or **repeats every week** on the weekdays you pick (e.g. Homework, Mon–Thu 15:00–20:00).
+
+**To work on (day plans)**
+- Under each day's blocks is a **To work on** list: tasks you mean to get to that day without fixing a time. *Add a task* picks an open task or creates a new one. Tasks keep their own due date; the Tasks list shows a "today's plan" tag on them.
+- Tick a planned task off there (or anywhere) and it is marked done for the day. *Not done* records that you didn't get to it; past days offer *Move to today*.
+- **At the end of the day** — the *Day review at* time in the sidebar, 21:00 by default — the app asks "How did it go?" with a notification and a toast, and whenever you open the app with unreviewed days a review card appears in the Schedule. The review lists each planned task with *Done*, *Move to today* and *Not done*.
 - Blocks on the same day can't overlap — you get a clear message naming the clash.
 - Optionally give a block a **category** — the "Work on a task" list then only offers open tasks from that category (and picking a task first fills in its category). Switch **Schedule → Tasks** (the switch or `T`) while such a block is running and Tasks shows **only that category** — a banner says so, and *Show everything again* restores exactly the category switches you had before. Flipping any category switch yourself also ends the focus.
 - Optionally **link a task** to a block ("work on …"). Linking never completes the task: it's only completed when you tick it off in Tasks. The *Now* card offers a "Mark done" shortcut and a link to open the task. From a task's editor, "Schedule time" creates a block for it.
@@ -94,6 +100,7 @@ There are no dependencies and nothing to install.
 | Key | Action |
 | --- | --- |
 | `T` / `S` | Switch to Tasks / Schedule |
+| `C` | Toggle the calendar layout of Tasks |
 | `N` | New task (or new block, in Schedule) |
 | `A` | Jump to the quick-add box |
 | `/` | Search |
@@ -160,6 +167,9 @@ Exports look like this (the same shape is used in `localStorage` under the key `
       "createdAt": "…",
       "updatedAt": "…"
     }
+  ],
+  "plans": [
+    { "id": "p_jkl012", "date": "2026-10-15", "taskId": "t_def456", "status": "open", "createdAt": "…", "updatedAt": "…" }
   ]
 }
 ```
@@ -168,6 +178,7 @@ Exports look like this (the same shape is used in `localStorage` under the key `
 - `dueDate` is a plain `YYYY-MM-DD` (no time zone surprises); `null` means no date.
 - `repeat` is `null` or `{ every, unit, days, from }`: `unit` is `day`, `week`, `month` or `year`; `every` is 1–99; `days` (weekly only, `0` = Sunday) defaults to the due date's weekday; `from` is `due` or `done`. A repeating task always has a `dueDate` (today is filled in if missing). Completed copies carry `seriesId`, the id of the repeating task they came from.
 - Block `start`/`end` are `HH:MM` (24-hour, end after start, same day). `days` are weekdays with `0` = Sunday … `6` = Saturday; when `date` is set the block happens once on that day and `days` is ignored.
+- `plans` are the "To work on" entries: one task on one day, `status` is `open`, `done` or `skipped`. Entries for missing tasks are dropped.
 - Block reminders: `notify: false` mutes the block; `remindMinutes` is the block's own lead in minutes (0–1440) and `null` means "use the default from settings".
 - Imports are validated and cleaned: unknown fields are dropped, bad values fall back to defaults, and references to missing categories or tasks are cleared. Hand-edited files are fine.
 
